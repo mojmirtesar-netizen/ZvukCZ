@@ -1,0 +1,10 @@
+PyAudioWPatch
+faster-whisper
+numpy
+scipy
+deepl
+nvidia-cublas-cu12
+nvidia-cudnn-cu12
+pystray
+Pillow
+keyboard

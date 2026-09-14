@@ -1,0 +1,13 @@
+# osobní / tajné - NIKDY nevkládat do gitu
+deepl_key.txt
+overlay_settings.json
+
+# virtuální prostředí Pythonu (velké, znovu vytvořitelné přes install.bat)
+.venv/
+__pycache__/
+*.pyc
+
+# běhový stav (mění se při každém spuštění, není potřeba verzovat)
+zvukcz.log
+zvukcz.err.log
+zvukcz.pid
