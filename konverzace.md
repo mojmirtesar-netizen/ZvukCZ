@@ -309,3 +309,19 @@ Požadavek: udělat z verze 1.1 pořádnou Windows aplikaci, instalační balí�
 - Sestaveno v `ZvukCZ1.1\dist\ZvukCZ_Install.exe` (spuštěno `build_installer.ps1` přímo ze složky `ZvukCZ1.1`, ne z kořene – takže balí verzi 1.1, ne kořenovou/1.0).
 - **Ověřeno naostro end-to-end**: spuštěn skutečný instalátor → nainstaloval do `%USERPROFILE%\Zvuk to CZ` (balíčky vč. `pystray`/`Pillow`/`keyboard`) → vytvořil `ZvukCZ.lnk` na ploše se správnými vlastnostmi (cíl, argumenty, ikona, popis) → **dvojklik na zástupce appku opravdu tiše spustil** (žádné okno, model se načetl, tray proces běžel) → zastaveno přes `stop_helper.ps1`.
 - Testovací instalace + zástupce po ověření na uživatelovo přání **smazány** (byl to jen test) – zůstává hotový `ZvukCZ1.1\dist\ZvukCZ_Install.exe`, který si uživatel může spustit sám, až bude chtít appku reálně nainstalovat.
+
+## 28. Zátěžový test – appka + 2× EVE Online + YouTube video
+Uživatel chtěl appku reálně nainstalovat (natrvalo) a otestovat zatížení systému při současném běhu hry a videa na YouTube.
+
+- Appka nainstalována naostro přes `ZvukCZ_Install.exe` do `%USERPROFILE%\Zvuk to CZ`, tentokrát **ponechána** (na rozdíl od předchozích testů). Vlastní `deepl_key.txt` dokopírován ručně, ať test odpovídá reálnému používání i s překladem (instalátor ho záměrně nevyplňuje sám).
+- Spuštěno přes zástupce na ploše (`ZvukCZ.lnk`) – stejně, jak by to dělal běžný uživatel.
+- Uživatel pustil **dva** klienty EVE Online zároveň (Prcimir + Zwjar) a video na YouTube.
+- Naměřeno (`Get-Counter` pro GPU Engine/GPU Process Memory, `Get-Process` pro CPU/RAM, s odstupem pro výpočet reálného CPU % z kumulativního času):
+  - CPU appky: ~0,4 % z celkového výkonu stroje (28 logických jader) – prakticky zanedbatelné.
+  - GPU appky v klidu: 0 % (žádný engine).
+  - GPU appky na špičce (zachyceno přesně během aktivního přepisu – potvrzeno růstem `zvukcz.log` v okně vzorkování): ~7,4 %.
+  - GPU paměť appky: ~926 MB (srovnatelné s jedním EVE klientem, ale jde jen o rezervovanou paměť modelu, ne o výpočetní zátěž).
+  - RAM appky: ~861 MB, stabilní mezi měřeními (žádný náznak úniku paměti v rámci testovacího okna).
+  - Fronta zpracování (`work_queue`) zůstala po celou dobu na 0, přepis/překlad stejně rychlé jako v klidu (0,3–0,6 s / 0,25–0,3 s) i s oběma hrami a videem běžícími zároveň.
+- Pro srovnání každý EVE klient sám o sobě táhne GPU (3D engine) na ~35–37 %. Appka je vedle toho zanedbatelná.
+- Závěr sdělený uživateli: appka reálně systém nezatěžuje. Uživatel se rozhodl **nechat appku nainstalovanou a běžící**.
