@@ -299,3 +299,13 @@ Požadavek: udělat zálohu všeho, git atd., a pokračovat dál.
 - `dist/` (obsahuje `ZvukCZ_Install.exe`) záměrně **není** v `.gitignore` – je to malý, záměrně zmrazený artefakt, který si uživatel výslovně nepřál nechat automaticky přebuildovávat, dává smysl ho mít verzovaný.
 - Prvotní commit: `46b85ce` – 36 souborů (kořen + oba archivy `ZvukCZ1.0`/`ZvukCZ1.1` + `.gitignore`), žádné tajné soubory uvnitř. `git status` po commitu čistý.
 - Repozitář je zatím jen lokální (žádný vzdálený remote/GitHub) – jen lokální historie/záloha, jak bylo požádáno.
+
+## 27. ZvukCZ1.1 jako desktopová aplikace – instalátor se zástupcem na ploše
+Požadavek: udělat z verze 1.1 pořádnou Windows aplikaci, instalační balíček s umístěním na plochu.
+
+- Vytvořena `zvukcz.ico` (Python/PIL, `Image.save(..., format="ICO", sizes=[...])`) – stejný vizuál jako tray ikonka (titulkový box "CZ"), více rozlišení pro ostré zobrazení na ploše i v Průzkumníku.
+- `build_installer.ps1` rozšířen: `zvukcz.ico` se teď taky zabaluje do instalátoru; po dokončení instalace se přes `WScript.Shell` COM objekt vytvoří zástupce `ZvukCZ.lnk` na ploše (`[Environment]::GetFolderPath("Desktop")`), který **přímo** spouští `powershell.exe -WindowStyle Hidden -File start_helper.ps1` (obchází `start.bat`, takže žádné blikající okno konzole ani "Press any key" – čisté chování jako u běžné appky).
+- Drobná oprava mimoto: `_quit()` (Ukončit v tray) teď maže i `zvukcz.pid`, které předtím po ukončení tímhle způsobem zůstávalo osiřelé (všiml si uživatel – "dyť jsem dal stop a ukončit", ale `Test-Path zvukcz.pid` pořád vracelo `True`; proces sám ale běžet nezůstal, jen soubor).
+- Sestaveno v `ZvukCZ1.1\dist\ZvukCZ_Install.exe` (spuštěno `build_installer.ps1` přímo ze složky `ZvukCZ1.1`, ne z kořene – takže balí verzi 1.1, ne kořenovou/1.0).
+- **Ověřeno naostro end-to-end**: spuštěn skutečný instalátor → nainstaloval do `%USERPROFILE%\Zvuk to CZ` (balíčky vč. `pystray`/`Pillow`/`keyboard`) → vytvořil `ZvukCZ.lnk` na ploše se správnými vlastnostmi (cíl, argumenty, ikona, popis) → **dvojklik na zástupce appku opravdu tiše spustil** (žádné okno, model se načetl, tray proces běžel) → zastaveno přes `stop_helper.ps1`.
+- Testovací instalace + zástupce po ověření na uživatelovo přání **smazány** (byl to jen test) – zůstává hotový `ZvukCZ1.1\dist\ZvukCZ_Install.exe`, který si uživatel může spustit sám, až bude chtít appku reálně nainstalovat.

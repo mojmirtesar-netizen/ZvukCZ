@@ -670,6 +670,12 @@ class Overlay:
                 self.tray_icon.stop()
             except Exception:
                 pass
+        pid_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "zvukcz.pid")
+        try:
+            if os.path.exists(pid_file):
+                os.remove(pid_file)
+        except Exception:
+            pass
         self.root.destroy()
 
     # ------------------------------------------------------------ hlavní smyčka

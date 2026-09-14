@@ -44,11 +44,6 @@ from faster_whisper import WhisperModel
 WHISPER_RATE = 16000
 CHUNK = 1024
 
-SILENCE_RMS = 0.004   # pod touto hlasitostí to beru jako ticho
-SILENCE_GAP = 0.8     # s ticha = konec promluvy
-MIN_SPEECH = 0.4      # kratší úseky zahodím
-MAX_SPEECH = 15.0     # delší promluvu rozseknu
-
 MODEL_SIZE = "small"  # tiny / base / small / medium / large-v3
 DEVICE = "cuda"       # "cpu" pokud by GPU dělalo problémy
 COMPUTE = "float16"   # na CPU spíš "int8"
@@ -72,6 +67,10 @@ DEFAULT_SETTINGS = {
     "anchor_y": None,         # spodní hrana boxu na ose Y; None = auto (u spodku obrazovky)
     "hotkey_settings": "",    # např. "ctrl+alt+n" - prázdné = vypnuto
     "hotkey_move": "",        # např. "ctrl+alt+m" - prázdné = vypnuto
+    "silence_rms": 0.004,     # pod touto hlasitostí to beru jako ticho
+    "silence_gap": 0.8,       # s ticha = konec promluvy
+    "min_speech": 0.4,        # kratší úseky zahodím
+    "max_speech": 7.0,        # delší promluvu rozseknu
 }
 
 
@@ -92,6 +91,10 @@ def save_settings(settings):
             json.dump(settings, f, ensure_ascii=False, indent=2)
     except Exception as exc:
         print(f"[nastavení overlaye se nepodařilo uložit: {exc}]")
+
+
+# sdílené jedno nastavení - čte ho capture() (vlastní vlákno) i Overlay (Tk vlákno)
+settings = load_settings()
 
 # ---------------------------------------------------------------- překlad
 
@@ -161,7 +164,7 @@ def capture():
             audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
             if channels > 1:
                 audio = audio.reshape(-1, channels).mean(axis=1)
-            if len(audio) / rate < MIN_SPEECH:
+            if len(audio) / rate < settings["min_speech"]:
                 return
             work_queue.put(resample_poly(audio, WHISPER_RATE, rate))
 
@@ -173,18 +176,18 @@ def capture():
             rms = float(np.sqrt(np.mean(block ** 2)))
             now = time.time()
 
-            if rms > SILENCE_RMS:
+            if rms > settings["silence_rms"]:
                 chunks.append(data)
                 last_sound = now
                 speaking = True
             elif speaking:
                 chunks.append(data)   # krátké pauzy uvnitř věty si nechám
-                if now - last_sound >= SILENCE_GAP:
+                if now - last_sound >= settings["silence_gap"]:
                     flush()
 
             if speaking:
                 dur = sum(len(c) for c in chunks) / 2 / channels / rate
-                if dur >= MAX_SPEECH:
+                if dur >= settings["max_speech"]:
                     flush()
 
 
@@ -202,7 +205,7 @@ class Overlay:
     PAD_Y = 10
 
     def __init__(self):
-        self.settings = load_settings()
+        self.settings = settings  # sdílené s capture() vláknem, ne vlastní kopie
         self.current_text = " "
         self.settings_panel = None
         self.move_mode = False
@@ -252,8 +255,16 @@ class Overlay:
         return cx, by
 
     def _resize(self, text):
-        """Nastaví text a přizpůsobí velikost/pozici okna, aby box těsně obepínal obsah."""
+        """Nastaví text a přizpůsobí velikost/pozici okna, aby box těsně obepínal obsah.
+        Prázdný text okno rovnou schová (žádný "zbytkový" minimální čtvereček)."""
         self.current_text = text
+        if not text.strip():
+            self.root.withdraw()
+            return
+        if self.root.state() == "withdrawn":
+            self.root.deiconify()
+            self.root.attributes("-topmost", True)
+
         max_text_width = self.max_width - 2 * self.PAD_X
         self.label.config(wraplength=max_text_width, text=text)
         self.root.update_idletasks()
@@ -310,6 +321,10 @@ class Overlay:
 
     def _enter_move_mode(self):
         self.move_mode = True
+        if not self.current_text.strip():
+            # box je schovaný (nic se zrovna nepřekládá) - ukaž aspoň placeholder,
+            # ať je co chytit a přetáhnout
+            self._resize("(přesuň mě)")
         # barva pozadí okna (odsazení okolo boxu) jinak splývá s klíčovací barvou
         # a tedy je klikatelná-skrz NEZÁVISLE na WS_EX_TRANSPARENT - v režimu
         # přesunu proto celé okno zneprůhledníme, aby tažení nic nerušilo.
@@ -337,6 +352,15 @@ class Overlay:
             widget.unbind("<ButtonRelease-1>")
         save_settings(self.settings)
         self._refresh_tray()
+        if self.current_text == "(přesuň mě)":
+            self._resize(" ")  # placeholder z _enter_move_mode zase schovat (okno se skryje)
+        else:
+            # po přepnutí zpět na průhledné okno umí na staré pozici (odkud se
+            # táhlo) zůstat "duch" vykresleného boxu, dokud se ta část obrazovky
+            # znovu nepřekreslí - vynutíme to krátkým skrytím/zobrazením okna.
+            self.root.withdraw()
+            self.root.deiconify()
+            self.root.attributes("-topmost", True)
 
     def _toggle_move_mode(self):
         if self.move_mode:
@@ -345,12 +369,10 @@ class Overlay:
             self._enter_move_mode()
 
     def _on_box_press(self, event):
-        print(f"DEBUG press {event.x_root},{event.y_root}")
         self._drag_start = (event.x_root, event.y_root)
         self._drag_anchor_start = self._effective_anchor()
 
     def _on_box_drag(self, event):
-        print(f"DEBUG drag {event.x_root},{event.y_root}")
         dx = event.x_root - self._drag_start[0]
         dy = event.y_root - self._drag_start[1]
         cx0, by0 = self._drag_anchor_start
@@ -359,7 +381,6 @@ class Overlay:
         self._resize(self.current_text)
 
     def _on_box_release(self, _event):
-        print("DEBUG release")
         save_settings(self.settings)
 
     # ------------------------------------------------------------ panel nastavení
@@ -424,6 +445,34 @@ class Overlay:
             self._resize(self.current_text)
             save_settings(self.settings)
 
+        def on_silence_rms(val):
+            new_val = round(float(val), 3)
+            if new_val == self.settings["silence_rms"]:
+                return
+            self.settings["silence_rms"] = new_val
+            save_settings(self.settings)
+
+        def on_silence_gap(val):
+            new_val = round(float(val), 1)
+            if new_val == self.settings["silence_gap"]:
+                return
+            self.settings["silence_gap"] = new_val
+            save_settings(self.settings)
+
+        def on_min_speech(val):
+            new_val = round(float(val), 1)
+            if new_val == self.settings["min_speech"]:
+                return
+            self.settings["min_speech"] = new_val
+            save_settings(self.settings)
+
+        def on_max_speech(val):
+            new_val = round(float(val), 1)
+            if new_val == self.settings["max_speech"]:
+                return
+            self.settings["max_speech"] = new_val
+            save_settings(self.settings)
+
         tk.Label(panel, text="Průhlednost").pack(anchor="w", padx=10, pady=(10, 0))
         op_scale = tk.Scale(panel, from_=10, to=100, orient="horizontal", length=220, command=on_opacity)
         op_scale.set(int(self.settings["opacity"] * 100))
@@ -443,6 +492,38 @@ class Overlay:
         color_btn.pack(padx=10, pady=10, fill="x")
 
         tk.Button(panel, text="Resetovat pozici", command=reset_position).pack(padx=10, pady=(0, 10), fill="x")
+
+        tk.Label(panel, text="Rozpoznávání řeči", font=("Segoe UI", 9, "bold")).pack(
+            anchor="w", padx=10, pady=(10, 0)
+        )
+
+        tk.Label(panel, text="Citlivost na ticho (nižší = citlivější)").pack(anchor="w", padx=10, pady=(6, 0))
+        rms_scale = tk.Scale(
+            panel, from_=0.001, to=0.02, resolution=0.001, orient="horizontal", length=220, command=on_silence_rms
+        )
+        rms_scale.set(self.settings["silence_rms"])
+        rms_scale.pack(padx=10)
+
+        tk.Label(panel, text="Délka ticha pro konec věty (s)").pack(anchor="w", padx=10, pady=(6, 0))
+        gap_scale = tk.Scale(
+            panel, from_=0.2, to=2.0, resolution=0.1, orient="horizontal", length=220, command=on_silence_gap
+        )
+        gap_scale.set(self.settings["silence_gap"])
+        gap_scale.pack(padx=10)
+
+        tk.Label(panel, text="Min. délka promluvy (s) - kratší se zahodí").pack(anchor="w", padx=10, pady=(6, 0))
+        min_scale = tk.Scale(
+            panel, from_=0.1, to=2.0, resolution=0.1, orient="horizontal", length=220, command=on_min_speech
+        )
+        min_scale.set(self.settings["min_speech"])
+        min_scale.pack(padx=10)
+
+        tk.Label(panel, text="Max. délka promluvy (s) - delší se rozsekne").pack(anchor="w", padx=10, pady=(6, 0))
+        max_scale = tk.Scale(
+            panel, from_=3, to=20, resolution=1, orient="horizontal", length=220, command=on_max_speech
+        )
+        max_scale.set(self.settings["max_speech"])
+        max_scale.pack(padx=10, pady=(0, 10))
 
         def apply_hotkeys():
             self.settings["hotkey_settings"] = self.hk_settings_entry.get().strip()
@@ -589,6 +670,12 @@ class Overlay:
                 self.tray_icon.stop()
             except Exception:
                 pass
+        pid_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "zvukcz.pid")
+        try:
+            if os.path.exists(pid_file):
+                os.remove(pid_file)
+        except Exception:
+            pass
         self.root.destroy()
 
     # ------------------------------------------------------------ hlavní smyčka
@@ -627,6 +714,7 @@ class Overlay:
                 elif cmd == "toggle_running":
                     if running_event.is_set():
                         running_event.clear()
+                        self._resize(" ")  # schovej titulek, ať tam nezustava zamrzlý
                     else:
                         running_event.set()
                     self._refresh_tray()
@@ -655,6 +743,8 @@ def transcriber():
 
     while True:
         audio = work_queue.get()
+        queued = work_queue.qsize()  # kolik dalsich useku ceka - naznaci frontu/zpozdeni
+        t0 = time.time()
         try:
             segments, _ = model.transcribe(
                 audio,
@@ -664,11 +754,17 @@ def transcriber():
                 condition_on_previous_text=False,
             )
             text = " ".join(s.text.strip() for s in segments).strip()
+            t1 = time.time()
             if not text:
                 continue
             translated = to_czech(text)
+            t2 = time.time()
             print(f"EN: {text}")
-            print(f"CZ: {translated}\n")
+            print(f"CZ: {translated}")
+            print(
+                f"[čas: přepis={t1 - t0:.2f}s překlad={t2 - t1:.2f}s "
+                f"audio={len(audio) / WHISPER_RATE:.1f}s fronta={queued}]\n"
+            )
             overlay_queue.put(translated)
         except Exception as exc:
             print(f"[chyba přepisu: {exc}]")

@@ -12,7 +12,8 @@ $filesToEmbed = @(
     "stop.bat",
     "start_helper.ps1",
     "stop_helper.ps1",
-    "requirements.txt"
+    "requirements.txt",
+    "zvukcz.ico"
 )
 
 Write-Host "Baleni souboru..."
@@ -53,6 +54,25 @@ $installLogic = $installLogic -replace '(?m)^\$root = \$PSScriptRoot\r?\n', ''
 $installLogic = $installLogic -replace '(?m)^# Instalator.*\r?\n', ''
 $installLogic = $installLogic -replace '\$root\b', '$targetDir'
 [void]$sb.AppendLine($installLogic)
+
+# --- zastupce na plose ---
+[void]$sb.AppendLine(@'
+$shortcutPath = Join-Path ([Environment]::GetFolderPath("Desktop")) "ZvukCZ.lnk"
+try {
+    $wsh = New-Object -ComObject WScript.Shell
+    $sc = $wsh.CreateShortcut($shortcutPath)
+    $sc.TargetPath = "powershell.exe"
+    $sc.Arguments = "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$targetDir\start_helper.ps1`""
+    $sc.WorkingDirectory = $targetDir
+    $sc.IconLocation = "$targetDir\zvukcz.ico"
+    $sc.Description = "ZvukCZ - preklad systemoveho zvuku do titulku"
+    $sc.Save()
+    Write-Host "Zastupce na plose vytvoren: $shortcutPath" -ForegroundColor Green
+} catch {
+    Write-Host "Zastupce na plose se nepodarilo vytvorit: $_" -ForegroundColor Yellow
+}
+'@)
+
 [void]$sb.AppendLine('Write-Host "Slozka: $targetDir"')
 
 $generatedPs1 = Join-Path $distDir "ZvukCZ_Install_generated.ps1"
