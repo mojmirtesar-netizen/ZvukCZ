@@ -267,7 +267,10 @@ Uživatel opakovaně hlásil, že přesun nejde (modrý okraj/editační režim 
 
 **Poučení pro příště**: i po tomhle nálezu je jasné, že `WS_EX_LAYERED` na Windows má víc skrytých vedlejších efektů, než dokumentace přiznává (viz i dřívější bod 15 o `SetLayeredWindowAttributes`) – při jakémkoliv budoucím problému s klikáním/hit-testingem na tomhle typu okna zkusit napřed odebrat `WS_EX_LAYERED` úplně, ne jen ladit `WS_EX_TRANSPARENT`/colorkey/alfa zvlášť.
 
-## 24. Doladění po prvním živém testu ve hře: duch-čtvereček, mizení titulku, latence, nastavitelné parametry řeči
+## 24. Archiv ZvukCZ1.1 dorovnán (před živým testem ve hře)
+Na výslovné přání uživatele zkopírovány všechny aktuální soubory (`loopback_translator.py`, `run.ps1`, `start.bat`, `stop.bat`, `start_helper.ps1`, `stop_helper.ps1`, `requirements.txt`, `install.ps1`, `install.bat`, `build_installer.ps1`, `deepl_key.txt`) do `ZvukCZ1.1\`. Archiv teď odpovídá živé kořenové kopii včetně tray ikonky, režimu přesunu, klávesových zkratek a Start/Stop pauzy.
+
+## 25. Doladění po prvním živém testu ve hře: duch-čtvereček, mizení titulku, latence, nastavitelné parametry řeči
 Po prvním opravdovém hraní uživatel nahlásil tři věci, postupně vyřešeno:
 
 ### a) "Duch" čtverečku po dokončení přesunu
@@ -287,5 +290,12 @@ Uživatel chtěl `MAX_SPEECH` i ostatní "na mě" (uživatele) laděné parametr
 - V panelu nastavení přibyla sekce "Rozpoznávání řeči" se 4 dalšími slidery (citlivost na ticho, délka ticha pro konec věty, min. a max. délka promluvy), se stejnou ochranou proti zbytečnému opakovanému volání jako ostatní slidery.
 - Vše ověřeno programovaticky (přesný scénář: start schovaný → vstup do přesunu s placeholder textem → konec přesunu → zase schovaný) i naostro přes `start.bat`/`stop.bat` bez chyby. Uživatel potvrdil: **"za mě v pořádku"**.
 
-## 25. Archiv ZvukCZ1.1 dorovnán (první kolo, před živým testem ve hře)
-Na výslovné přání uživatele zkopírovány všechny aktuální soubory (`loopback_translator.py`, `run.ps1`, `start.bat`, `stop.bat`, `start_helper.ps1`, `stop_helper.ps1`, `requirements.txt`, `install.ps1`, `install.bat`, `build_installer.ps1`, `deepl_key.txt`) do `ZvukCZ1.1\`. Archiv teď odpovídá živé kořenové kopii včetně tray ikonky, režimu přesunu, klávesových zkratek a Start/Stop pauzy.
+## 26. Git repozitář jako záloha
+Požadavek: udělat zálohu všeho, git atd., a pokračovat dál.
+
+- Git nebyl na stroji nainstalovaný – doinstalováno přes `winget install --id Git.Git` (stejný postup jako dřív u Pythonu).
+- Vytvořen `.gitignore` **před** prvním commitem (kriticky důležité kvůli osobnímu DeepL klíči): vynechává `deepl_key.txt` (existuje ve 3 kopiích – kořen, `ZvukCZ1.0`, `ZvukCZ1.1`), `overlay_settings.json`, `.venv/`, `__pycache__/`, a běhové soubory `zvukcz.log`/`zvukcz.err.log`/`zvukcz.pid`.
+- Před commitem výslovně ověřeno (ne jen předpokládáno): `git check-ignore -v` potvrdil všechny 3 kopie `deepl_key.txt` i `overlay_settings.json` jako ignorované; `git status --ignored` totéž; navíc `grep` přes celý projekt po samotném řetězci klíče nenašel žádný soubor, kde by zůstal zapsaný natvrdo (jistota, že ani starší verze `run.ps1` v archivech klíč neobsahují).
+- `dist/` (obsahuje `ZvukCZ_Install.exe`) záměrně **není** v `.gitignore` – je to malý, záměrně zmrazený artefakt, který si uživatel výslovně nepřál nechat automaticky přebuildovávat, dává smysl ho mít verzovaný.
+- Prvotní commit: `46b85ce` – 36 souborů (kořen + oba archivy `ZvukCZ1.0`/`ZvukCZ1.1` + `.gitignore`), žádné tajné soubory uvnitř. `git status` po commitu čistý.
+- Repozitář je zatím jen lokální (žádný vzdálený remote/GitHub) – jen lokální historie/záloha, jak bylo požádáno.
