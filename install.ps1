@@ -98,4 +98,5 @@ Write-Host ""
 Write-Host "=== Hotovo! ===" -ForegroundColor Cyan
 Write-Host "Spusteni: start.bat"
 Write-Host "Zastaveni: stop.bat"
+Write-Host "Odinstalace: uninstall.bat"
 try { Read-Host "Stiskni Enter pro konec" } catch {}

@@ -12,6 +12,8 @@ $filesToEmbed = @(
     "stop.bat",
     "start_helper.ps1",
     "stop_helper.ps1",
+    "uninstall.bat",
+    "uninstall_helper.ps1",
     "requirements.txt",
     "zvukcz.ico"
 )

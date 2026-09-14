@@ -357,3 +357,14 @@ Uživatel neměl zrovna přístup do své běžné Mumble místnosti, tak jsem p
 - Připojovací údaje k Mumble serveru jsou zatím natvrdo v hlavičce `mumble_bot.py` (test server GuildBit vyprší po 4 hodinách) – při přechodu na ostrý/vlastní server je potřeba je tam přepsat.
 - `.gitignore` doplněn o `bot_key.pem` (soukromý klíč certifikátu bota).
 - Vytvořen `Mumble bot\README.md` s instalačními a technickými poznámkami pro budoucí referenci.
+
+## 30. Odinstalační skript pro ZvukCZ1.1 (`uninstall.bat`)
+Po dotazu, jak se dá appka odinstalovat (dosud žádný formální odinstalátor neexistoval), uživatel zvolil z nabídnutých možností **přidat `uninstall.bat` do instalátoru** – jen pro budoucí použití, výslovně **ne** odinstalovat aktuální reálně nainstalovanou appku hned teď.
+
+- Vytvořen `uninstall_helper.ps1` (v kořeni i `ZvukCZ1.1\`): po potvrzení textem "ano" nejdřív zastaví běžící appku (zavolá `stop_helper.ps1`, pokud existuje), smaže zástupce `ZvukCZ.lnk` na ploše, a nakonec smaže celou instalační složku.
+- **Sebe-mazání složky** vyžaduje trik – skript běží zevnitř složky, kterou má smazat, takže se nemůže smazat přímo (zámek souboru). Řešeno spuštěním odděleného procesu mimo složku (v `%TEMP%`), který 2 s počká a pak složku smaže; po jeho spuštění už nesmí následovat žádný blokující dotaz (`Read-Host`/`pause`), jen se vypíše hláška a skript skončí.
+- `uninstall.bat` je tenká obálka bez `pause` na konci (ze stejného důvodu jako výše).
+- `build_installer.ps1` rozšířen o zabalení obou nových souborů (`uninstall.bat`, `uninstall_helper.ps1`) do instalátoru; `install.ps1` doplněn o zmínku "Odinstalace: uninstall.bat" v závěrečné hlášce.
+- `ZvukCZ1.1\dist\ZvukCZ_Install.exe` přebuildován – ověřeno, že všech 10 souborů (vč. nových dvou) je zabaleno.
+- **Testování bylo záměrně omezené**: instalátor cílí vždy na pevnou cestu `%USERPROFILE%\Zvuk to CZ`, což je přesně místo reálné, uživatelem ponechané instalace z bodu 28 – spustit tam `uninstall.bat` by ji smazalo. Proto ověřen **jen samotný rizikový mechanismus** (sebe-mazání složky) izolovaně v `%TEMP%\UninstallMechTest` s minimálním testovacím skriptem (bez mazání zástupce, bez volání `stop_helper.ps1`) – složka existovala před spuštěním, po 4 s `Test-Path` vrátilo `False`. Reálná instalace uživatele nebyla nijak dotčena.
+- Soubory synchronizovány mezi kořenem a `ZvukCZ1.1\` (stejný pattern jako u předchozích funkcí).
