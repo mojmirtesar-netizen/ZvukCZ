@@ -1,6 +1,7 @@
 # osobní / tajné - NIKDY nevkládat do gitu
 deepl_key.txt
 overlay_settings.json
+bot_key.pem
 
 # virtuální prostředí Pythonu (velké, znovu vytvořitelné přes install.bat)
 .venv/

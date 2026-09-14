@@ -325,3 +325,35 @@ Uživatel chtěl appku reálně nainstalovat (natrvalo) a otestovat zatížení 
   - Fronta zpracování (`work_queue`) zůstala po celou dobu na 0, přepis/překlad stejně rychlé jako v klidu (0,3–0,6 s / 0,25–0,3 s) i s oběma hrami a videem běžícími zároveň.
 - Pro srovnání každý EVE klient sám o sobě táhne GPU (3D engine) na ~35–37 %. Appka je vedle toho zanedbatelná.
 - Závěr sdělený uživateli: appka reálně systém nezatěžuje. Uživatel se rozhodl **nechat appku nainstalovanou a běžící**.
+
+## 29. Nový podprojekt "Mumble bot" – bot přímo v Mumble, zvuk po jednotlivých mluvčích
+Požadavek: vrátit se k původnímu tématu "Mumble" (zatím odloženo v bodě 27 dřívější historie) – bot, co se připojí přímo do Mumble serveru (ne loopback systémového zvuku) a umí tedy oddělit jednotlivé mluvčí. Uživatel výslovně požádal **nejdřív prozkoumat dokumentaci**, než se začne cokoliv stavět ("ať zase nelaborujeme na prázdno").
+
+### Research (přes fork agenta, jen čtení/hledání)
+- Jediná reálná knihovna: **`pymumble`** (na PyPI přesně tento název; `pymumble_py3` je jen název GitHub větve, ne balíčku). Málo udržovaná (autor hledá nástupce), ale funkční. Licence GPL-3.0 (na rozdíl od zbytku projektu).
+- Umí zvuk **po jednotlivých mluvčích** přes callback `on_sound(user, soundchunk)` – přesně to, co WASAPI loopback neumí.
+- Bot je vidět jako normální připojený uživatel v kanálu (sociálně viditelné, na rozdíl od lokálního zachytávání zvuku).
+- Potřebuje certifikát (`certfile`/`keyfile`), zvuk chodí jen když daný uživatel opravdu mluví (gated jeho vlastní VAD/PTT).
+
+### Testovací server
+Uživatel neměl zrovna přístup do své běžné Mumble místnosti, tak jsem prohledal možnosti (GuildBit, RedMumble, Mumble.com) a na jeho pokyn rovnou přes `claude-in-chrome` **založil dočasný server na GuildBit.com** (bez registrace, zdarma, 4 hodiny): `iron.guildbit.com:50003`, heslo vygenerováno tlačítkem na stránce. Uživatel se připojil vlastním Mumble klientem.
+
+### Sestavení a ladění (postupně, s ověřováním na každém kroku)
+1. **Samostatné venv** pro "Mumble bot" – `pymumble` vyžaduje pevně `protobuf==3.12.2`, což by v společném venv rozbilo `onnxruntime`/`faster-whisper` v ZvukCZ (`protobuf>=4.25.8`). Omylem nainstalováno nejdřív do sdíleného venv, ihned zjištěno a opraveno (odinstalováno, `protobuf` vrácen na `7.36.1`, ověřeno že ZvukCZ funguje dál). V dedikovaném venv pro Mumble bota nakonec `pip` samo doresolvovalo kompatibilní `onnxruntime==1.26.0`, takže `faster-whisper` i `pymumble` fungují ve stejném venv bez konfliktu.
+2. **Chybějící `opus.dll`** – `opuslib` (závislost `pymumble`) potřebuje nativní Opus knihovnu, kterou Windows nemá. Získána z balíčku `PyOgg` (obsahuje předkompilované `opus.dll` pro Windows) a přidána do `PATH` za běhu stejným trikem jako cuBLAS/cuDNN v ZvukCZ.
+3. **`ssl.wrap_socket()` odstraněno v Pythonu 3.12+** – `pymumble` na něm staví TLS spojení. Přidána kompatibilní náhrada přes `ssl.SSLContext` (zjištěno rovnou z tracebacku, ne hádáním).
+4. **Certifikát** vygenerován přes `openssl` (bundlovaný s Git for Windows, `C:\Program Files\Git\usr\bin\openssl.exe`) – `bot_cert.pem`/`bot_key.pem`, 10 let platnost, self-signed.
+5. Minimální test připojení + příjmu zvuku (`test_connect.py`) – při prvním pokusu žádný zvuk nedorazil. Diagnostikováno systematicky (ne odhadem): rozšířený debug test (`test_debug.py`) ukázal, že control kanál (ping/pong, seznam uživatelů) funguje normálně, ale žádný audio paket nikdy nedorazil ani přes 20s okno. Ukázalo se, že **uživatel prostě neměl aktivní mikrofon** – po zapnutí zvuk hned přišel čistě (~250 fragmentů, 20ms/1920B každý, správně přiřazeno ke jménu mluvčího).
+
+### Plný pipeline (`mumble_bot.py`)
+- `SpeakerBuffer` – stejná logika ticho/konec věty/max délka jako `capture()` v ZvukCZ, ale **samostatná instance na každého mluvčího** (klíčováno podle Mumble session id), audio přeresamplováno z 48000 Hz (Mumble) na 16000 Hz (Whisper) stejně jako dřív.
+- `transcriber()` – stejný `WhisperModel` (small/cuda/float16), stejné DeepL napojení (`deepl_key.txt` zkopírován ze ZvukCZ).
+- **Overlay zkopírován beze změny logiky** ze ZvukCZ1.1 (auto-přizpůsobení velikosti, klikání skrz přes odebrání `WS_EX_LAYERED` v režimu přesunu, tray ikonka, klávesové zkratky, panel nastavení včetně parametrů rozpoznávání řeči) – jen titulek teď obsahuje i jméno mluvčího (`"Jméno: text"`).
+- Vlastní `overlay_settings.json` v `Mumble bot\` složce (oddělené od ZvukCZ, ne sdílené).
+- **Ověřeno naostro end-to-end**: uživatel řekl anglicky "Hello, how are you?" do Mumble mikrofonu → bot přepsal → přeložil → zobrazil na overlay jako "Spoock: Ahoj, jak se máš?". Uživatel potvrdil, že titulek viděl.
+- Po úspěšném testu bot na uživatelovo přání ukončen.
+
+### Poznámky
+- Připojovací údaje k Mumble serveru jsou zatím natvrdo v hlavičce `mumble_bot.py` (test server GuildBit vyprší po 4 hodinách) – při přechodu na ostrý/vlastní server je potřeba je tam přepsat.
+- `.gitignore` doplněn o `bot_key.pem` (soukromý klíč certifikátu bota).
+- Vytvořen `Mumble bot\README.md` s instalačními a technickými poznámkami pro budoucí referenci.
