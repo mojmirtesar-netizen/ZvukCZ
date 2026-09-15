@@ -2,6 +2,14 @@
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 
+# Read-Host uvnitr zkompilovaneho .exe (ps2exe) obcas tise selze (chybi
+# interaktivni konzole) - bez fallbacku by se okno zavrelo driv, nez si
+# clovek stihne precist chybovou hlasku. Start-Sleep na stdin nezavisi,
+# takze zarucene pocka, i kdyz Read-Host spadne.
+function Pause-Konec {
+    try { Read-Host "Stiskni Enter pro konec" } catch { Start-Sleep -Seconds 15 }
+}
+
 function Refresh-Path {
     $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
                 [System.Environment]::GetEnvironmentVariable("Path", "User")
@@ -24,7 +32,7 @@ Write-Host "1) Kontrola NVIDIA graficke karty..."
 $gpu = Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match "NVIDIA" }
 if (-not $gpu) {
     Write-Host "   V PC nebyla nalezena NVIDIA graficka karta. Tento instalator je jen pro NVIDIA GPU verzi." -ForegroundColor Red
-    try { Read-Host "Stiskni Enter pro konec" } catch {}
+    Pause-Konec
     exit 1
 }
 Write-Host "   OK: $($gpu.Name)" -ForegroundColor Green
@@ -37,7 +45,7 @@ if (-not $pythonExe) {
     Write-Host "   Python nenalezen, instaluji pres winget (Python 3.13)..."
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
         Write-Host "   winget neni k dispozici. Nainstaluj Python rucne z https://python.org a spust instalaci znovu." -ForegroundColor Red
-        try { Read-Host "Stiskni Enter pro konec" } catch {}
+        Pause-Konec
         exit 1
     }
     winget install --id Python.Python.3.13 -e --source winget --accept-package-agreements --accept-source-agreements
@@ -45,7 +53,7 @@ if (-not $pythonExe) {
     $pythonExe = Find-Python
     if (-not $pythonExe) {
         Write-Host "   Python se nepodarilo najit ani po instalaci. Zavri toto okno, otevri nove PowerShell okno a spust install.bat znovu." -ForegroundColor Red
-        try { Read-Host "Stiskni Enter pro konec" } catch {}
+        Pause-Konec
         exit 1
     }
 }
@@ -58,6 +66,19 @@ $venvPython = Join-Path $root ".venv\Scripts\python.exe"
 if (-not (Test-Path $venvPython)) {
     & $pythonExe -m venv (Join-Path $root ".venv")
 }
+# & na externi .exe negeneruje terminujici chybu ani s $ErrorActionPreference
+# = Stop - bez tehle kontroly by skript tise pokracoval dal i po neuspesnem
+# vytvoreni venv (presne tohle se stalo - viz zvukcz.err.log s hlaskou
+# "python.exe is not recognized" pri prvnim spusteni appky).
+if (-not (Test-Path $venvPython)) {
+    Write-Host "   CHYBA: vytvoreni .venv selhalo (chybi $venvPython)." -ForegroundColor Red
+    Write-Host "   Nejcastejsi priciny: 'python' v PATH je jen zastupny stub z Microsoft" -ForegroundColor Red
+    Write-Host "   Storu (nejde o skutecny Python), antivirus zablokoval zapis, nebo malo" -ForegroundColor Red
+    Write-Host "   mista na disku. Zkontroluj 'python --version' v bezne otevrenem" -ForegroundColor Red
+    Write-Host "   PowerShellu a spust instalaci znovu." -ForegroundColor Red
+    Pause-Konec
+    exit 1
+}
 Write-Host "   OK" -ForegroundColor Green
 
 # 4) balicky
@@ -65,6 +86,12 @@ Write-Host ""
 Write-Host "4) Instalace balicku (muze chvili trvat, stahuji se i CUDA knihovny)..."
 & $venvPython -m pip install --upgrade pip --quiet
 & $venvPython -m pip install -r (Join-Path $root "requirements.txt")
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "   CHYBA: instalace balicku selhala (pip skoncil s chybou). Zkontroluj" -ForegroundColor Red
+    Write-Host "   pripojeni k internetu a spust instalaci znovu." -ForegroundColor Red
+    Pause-Konec
+    exit 1
+}
 Write-Host "   OK" -ForegroundColor Green
 
 # 5) over GPU
@@ -101,4 +128,4 @@ Write-Host "=== Hotovo! ===" -ForegroundColor Cyan
 Write-Host "Spusteni: start.bat"
 Write-Host "Zastaveni: stop.bat"
 Write-Host "Odinstalace: uninstall.bat"
-try { Read-Host "Stiskni Enter pro konec" } catch {}
+Pause-Konec

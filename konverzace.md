@@ -368,3 +368,99 @@ Po dotazu, jak se dá appka odinstalovat (dosud žádný formální odinstaláto
 - `ZvukCZ1.1\dist\ZvukCZ_Install.exe` přebuildován – ověřeno, že všech 10 souborů (vč. nových dvou) je zabaleno.
 - **Testování bylo záměrně omezené**: instalátor cílí vždy na pevnou cestu `%USERPROFILE%\Zvuk to CZ`, což je přesně místo reálné, uživatelem ponechané instalace z bodu 28 – spustit tam `uninstall.bat` by ji smazalo. Proto ověřen **jen samotný rizikový mechanismus** (sebe-mazání složky) izolovaně v `%TEMP%\UninstallMechTest` s minimálním testovacím skriptem (bez mazání zástupce, bez volání `stop_helper.ps1`) – složka existovala před spuštěním, po 4 s `Test-Path` vrátilo `False`. Reálná instalace uživatele nebyla nijak dotčena.
 - Soubory synchronizovány mezi kořenem a `ZvukCZ1.1\` (stejný pattern jako u předchozích funkcí).
+
+## 31. Doplnění DeepL návodu do instalátoru ZvukCZ1.1
+
+Datum: 2026-09-15
+
+Uživatel se zeptal, jestli instalátor informuje o nutnosti DeepL API klíče. Odpověď: krok 6 se ptá, ale bez odkazu, kde klíč získat.
+
+- Přidán odkaz na `https://www.deepl.com/pro-api` (DeepL API Free tier registrace) do `install.ps1` (kořen i `ZvukCZ1.1\`), krok 6 nyní vypisuje odkaz + odkazuje na README.
+- Vytvořen nový `README.md` (kořen i `ZvukCZ1.1\`) s návodem: kde se zaregistrovat, kde v DeepL účtu najít klíč, kam ho vložit (`deepl_key.txt`), plus stručný přehled instalace/spuštění/ovládání appky.
+- `build_installer.ps1` (kořen i `ZvukCZ1.1\`) rozšířen o `README.md` do seznamu balených souborů.
+- Commit `e316be0` (zdrojové změny), poté na přání uživatele přebuildován `ZvukCZ1.1\dist\ZvukCZ_Install.exe` (100 352 B, 11 souborů vč. README) – commit `a5b7563`.
+- Root/`ZvukCZ1.0` instalátor (`dist\ZvukCZ_Install.exe`, stará konzolová verze) záměrně nepřebuildován – zůstává zmrazený artefakt jako dřív.
+
+## 32. Zahájení Linux verze (AMD GPU / bez GPU) – research fáze
+
+Uživatel chce novou verzi appky pro Linux, cílovka AMD grafická karta nebo žádná GPU (NVIDIA řešeno, o tu teď nejde). Testovat to nejde interaktivně – uživatel může appku pasivně vyzkoušet jen na svém Debianu, bez debug smyčky se mnou. Na jeho výslovné přání proběhl **nejdřív research přes dokumentaci** (fork agent, jen čtení/hledání, žádný kód), než se začne cokoliv psát – stejný postup jako u bodu 29 (Mumble bot).
+
+### Výsledky researche (2026-09-15)
+1. **AMD GPU přepis**: `CTranslate2` (backend `faster-whisper`) nedávno (2026-02, PR #1989) přidal ROCm/HIP podporu upstream, ale **jen jako GitHub-release wheely, ne přes `pip install`** (na PyPI je pořád jen CPU/CUDA). Zralejší cross-vendor alternativa: `whisper.cpp` s Vulkan backendem (`-DGGML_VULKAN=1`) – funguje na AMD i bez ROCm toolkitu, ale je to jiný engine než faster-whisper.
+2. **Zachytávání zvuku**: `sounddevice`/PortAudio + výběr `.monitor` zařízení funguje stejně na čistém PulseAudio i na PipeWire-pulse kompatibilní vrstvě (Debian 12 default), bez rootu – spolehlivé, žádný zásadní problém.
+3. **Click-through overlay**: na X11 proveditelné (Xlib XShape input-shape, jako `WS_EX_LAYERED`/`WS_EX_TRANSPARENT` na Windows), na **Wayland (GNOME, Debian 12 default session) zásadně nejde** běžnou Tk/Xlib appkou – layer-shell protokol funguje jen na wlroots/KDE, ne na GNOME Wayland.
+4. **Tray ikonka**: `pystray` + AppIndicator funguje, ale potřebuje systémové (apt) balíčky navíc (`python3-gi`, `gir1.2-ayatanaappindicator3-0.1`, `gir1.2-gtk-3.0`) – nejde čistě přes pip.
+5. **Globální zkratky**: `keyboard` (balíček používaný ve Windows verzi) na Linuxu vyžaduje root/skupinu `input` – nevhodné. `pynput` funguje na X11 bez rootu. Na **Wayland globální zkratky nejdou** žádnou knihovnou (bezpečnostní model kompozitoru), jediná legitimní cesta je nový XDG Desktop Portal `GlobalShortcuts`, na GNOME nekonzistentně podporovaný.
+
+### Doporučená architektura (z researche, zatím NEODSOUHLASENO uživatelem)
+- Přepis: CPU (int8) jako spolehlivý default, GPU akcelerace (ROCm wheel nebo whisper.cpp+Vulkan) jen jako volitelný/experimentální krok.
+- Zvuk: `sounddevice` + `.monitor` zařízení.
+- Overlay: plně funkční jen na X11 session; na Wayland detekovat `XDG_SESSION_TYPE` a degradovat s jasnou hláškou (jen konzole/log).
+- Tray: `pystray`+AppIndicator, systémové závislosti zdokumentovat.
+- Zkratky: `pynput` na X11, na Wayland vypnout s hláškou.
+
+### Rozhodnutí uživatele
+1. **Wayland/overlay**: uživatel zvolil variantu **"bez overlaye úplně pro v1"** – žádný Xlib click-through kód, jen konzolový/log výstup, bez ohledu na X11/Wayland.
+2. **GPU v1**: uživatel zvolil **"jen CPU"** – žádný GPU kód v v1.
+
+Vzhledem k volbě "bez overlay" logicky odpadly i tray ikonka a globální zkratky (byly by k ničemu bez overlaye, který by ovládaly) – v1 je tedy funkčně obdoba konzolové `ZvukCZ1.0` z Windows, jen portovaná na Linux/CPU.
+
+### Implementace v1 (2026-09-15)
+Vytvořen nový podadresář `ZvukCZ-Linux/` (vedle `ZvukCZ1.0`/`ZvukCZ1.1`):
+- `loopback_translator.py` – port `ZvukCZ1.0`/loopback_translator.py na Linux: `pyaudiowpatch` → `sounddevice` (hledání `.monitor` zařízení přes `sd.query_devices()`, `sd.RawInputStream` blocking read), `DEVICE="cpu"`/`COMPUTE="int8"` natvrdo (žádná GPU/DLL logika), `MAX_SPEECH=7.0` (převzato z pozdějšího Windows doladění, bod 25c). Přepis/DeepL logika beze změny oproti Windows verzi.
+- `requirements.txt` – `sounddevice`, `faster-whisper`, `numpy`, `scipy`, `deepl` (bez `PyAudioWPatch`, bez nvidia balíčků).
+- `install.sh` – kontrola Pythonu, informativní kontrola `pactl` (PulseAudio/PipeWire), `.venv`, instalace balíčků, DeepL klíč (stejný odkaz+README pattern jako u Windows `install.ps1`).
+- `run.sh` / `start.sh` / `stop.sh` – bash/sh obdoba `run.ps1`/`start_helper.ps1`/`stop_helper.ps1`: `start.sh` pouští `run.sh` přes `nohup … &` (ne `setsid` – ten by fork-oval a `$!` by ukazoval na už skončený proces, ověřeno úvahou nad chováním util-linux `setsid`), PID do `zvukcz.pid`, log do `zvukcz.log`/`zvukcz.err.log`; `stop.sh` posílá nejdřív SIGTERM (+ `pkill -P` pro případné přímé potomky), po 5 s čekání případně SIGKILL.
+- `README.md` – vysvětluje rozdíly oproti Windows verzi (proč bez overlaye/GPU), instalaci, DeepL klíč, spuštění/zastavení, řešení problémů (`.monitor` zařízení nenalezeno apod.).
+
+**Ověřeno, co šlo ověřit bez cílového stroje** (nejde to tu spustit naostro – jen pasivní test na uživatelově Debianu):
+- `bash -n` na všech 4 shell skriptech – syntakticky OK.
+- `python -m py_compile loopback_translator.py` – syntakticky OK.
+- API `sounddevice` (`query_devices()` klíče `name`/`index`/`max_input_channels`/`default_samplerate`, `RawInputStream` konstruktor a `read(frames)` → `(data, overflowed)`) ověřeno přes WebFetch proti oficiální dokumentaci `python-sounddevice.readthedocs.io`, ne odhadem.
+- `find_monitor_device()` použije `d["index"]` z vráceného slovníku (ne pozici v enumerate), pro robustnost.
+
+Zatím **necommitnuto** (čeká se na explicitní pokyn, jako u předchozích bodů).
+
+## 33. Živý test ZvukCZ-Linux přes SSH na reálném Debianu
+
+Uživatel nabídl reálný přístup na Debian 12 stroj v síti (`192.168.86.192`, hostname `debian-tuya`) místo jen "pasivního" testu. Vygenerován dedikovaný SSH klíč (`~/.ssh/id_ed25519`, komentář `claude-code-zvukcz-test`), uživatel ho přidal do `authorized_keys` uživatele `root`. Přístup přes SSH jako root.
+
+### Zjištěný hardware/prostředí
+- 2jádrový Intel Celeron N3000 @1.04GHz, **bez AVX2** (jen SSE4.1/4.2) - výrazně slabší stroj, ale reprezentativní pro "bez GPU" scénář.
+- Debian 12.15, PipeWire 0.3.65 + pipewire-pulse + wireplumber nainstalováno, GNOME desktop nainstalován, ale **žádný uživatel není aktuálně přihlášený v grafické session** (jen root přes SSH/tmux) - PipeWire jako per-user služba tedy neběží.
+- Uživatelský účet `mojmir` existuje, ale bez aktivní session.
+
+### Co se otestovalo a opravilo
+1. **`install.sh` end-to-end** (čistá instalace, `rm -rf .venv` + spuštění) - všechny balíčky (`sounddevice`, `faster-whisper`/`ctranslate2`, `numpy`, `scipy`, `deepl`) mají hotové wheely pro Debian 12/Python 3.11, žádné kompilování, žádný pád.
+2. **Nalezena a opravena chybějící systémová závislost**: `sounddevice` na Linuxu (na rozdíl od Windows/macOS wheelu) **nebalí PortAudio** - `import sounddevice` rovnou spadl na `OSError: PortAudio library not found`. Opraveno: `install.sh` teď kontroluje/instaluje `libportaudio2` přes apt (krok 2, nový), README doplněno.
+3. **Ověřeno, že `faster-whisper`/`ctranslate2` na CPU bez AVX2 neshodí** (obava z researche v bodě 32 se nepotvrdila jako blokující - ctranslate2 má fallback bez AVX2).
+4. **Klíčový výkonnostní nález** (naměřeno, ne odhadnuto): na tomhle CPU je model `small` i `base` **6-15× pomalejší než reálný čas** (transkripce 7s zvuku trvala 43-54s) - nepoužitelné živě, zpoždění by se donekonečna prodlužovalo. Model `tiny` běžel v **0.77× reálného času** (rychleji než realtime, použitelné). Opraveno: `MODEL_SIZE` je teď konfigurovatelný přes env proměnnou `ZVUKCZ_MODEL_SIZE` (výchozí `base`), README má naměřenou tabulku a návod na přepnutí na `tiny`.
+5. **`find_monitor_device()` chybová hláška** ověřena naživo - v prostředí bez aktivní PipeWire user session (jako tady) appka čistě a srozumitelně selže, ne pád/zaseknutí.
+6. **`start.sh`/`stop.sh`** ověřeny naostro: spuštění na pozadí (PID do `zvukcz.pid`, log do `zvukcz.log`/`zvukcz.err.log`), ochrana proti dvojitému spuštění (`ZvukCZ uz bezi`), čisté zastavení i úklid po already-exited procesu (`stop.sh` po pádu appky správně smaže `zvukcz.pid` a nehlásí chybu).
+
+### Co se NEOTESTOVALO (chybí aktivní desktop session)
+Živé zachytávání systémového zvuku (nalezení `.monitor` zařízení + reálný přepis mluveného slova) nejde otestovat jako root přes SSH bez přihlášeného uživatele - PipeWire běží per-user. Uživatel zvažuje přihlásit se do GNOME session (fyzicky nebo přes `gnome-remote-desktop`, který je na stroji nainstalovaný) a pustit zvuk, aby šlo tohle dootestovat.
+
+Testovací nasazení zůstává v `/root/zvukcz-linux-test/` na vzdáleném stroji (mimo git, jen pro účely testu).
+
+## 34. Windows instalátor u kamaráda "nic nenainstaloval" - nalezena a opravena reálná chyba v install.ps1
+
+Uživatel předal `ZvukCZ_Install.exe` (z `ZvukCZ1.1\dist\`) kamarádovi - výsledek: černé okno se objevilo a hned zmizelo, nic se nenainstalovalo. Kamarád má NVIDIA GPU (takže to není chybějící-GPU případ z kroku 1 instalátoru).
+
+### Diagnóza (z reálného `zvukcz.err.log`, ne odhadem)
+Uživatel poslal obsah `zvukcz.err.log` z pokusu appku spustit: `& : The term 'C:\Users\Mojmir\Zvuk to CZ\.venv\Scripts\python.exe' is not recognized...` - venv nikdy nebylo správně vytvořené, ale instalátor přesto "uspěl" (vytvořil zástupce na ploše atd.).
+
+**Kořenová příčina** (ověřeno čtením kódu a PowerShell sémantiky, ne hádáním): `& $pythonExe -m venv ...` je volání externího `.exe`. `$ErrorActionPreference = "Stop"` na začátku `install.ps1` **nemá na externí programy žádný vliv** (platí jen pro cmdlety/terminující chyby PowerShellu) - pokud `python -m venv` na kamarádově stroji z libovolného důvodu selhal (typicky: `python` v PATH je jen zástupný stub z Microsoft Storu, ne skutečný Python - přesně tenhle problém řešil úplně první bod téhle konverzace, bod 1), skript to **potichu ignoroval** a napsal "OK" i tak. Skript pak pokračoval až do konce (vytvořil zástupce), a teprve při **spuštění appky** to spadlo na chybějícím `.venv\Scripts\python.exe`.
+
+Druhá, spolupůsobící chyba: `Read-Host "Stiskni Enter pro konec"` uvnitř zkompilovaného `.exe` (ps2exe) občas tise selže (`try/catch` už to zachytávalo, viz bod 14 dřívější historie) - i kdyby instalátor chybu vypsal, okno by se stejně hned zavřelo, protože `Read-Host` spadl a `catch {}` neudělal nic, co by okno drželo otevřené. Přesně to viděl kamarád ("černé okno se objevilo a hned zmizelo").
+
+### Oprava (`install.ps1`, kořen i `ZvukCZ1.1\`, zatím necommitnuto)
+1. Nová funkce `Pause-Konec`: `try { Read-Host ... } catch { Start-Sleep -Seconds 15 }` - `Start-Sleep` nezávisí na stdin, takže garantovaně počká 15s, i když `Read-Host` selže. Nahrazuje všech 5 předchozích `try { Read-Host ... } catch {}` výskytů.
+2. Po `python -m venv` přidána explicitní kontrola `Test-Path $venvPython` - pokud venv reálně nevzniklo, skript teď **hlasitě selže** s vysvětlující hláškou (stub z MS Storu / antivirus / málo místa) místo tichého "OK".
+3. Po `pip install` přidána kontrola `$LASTEXITCODE -ne 0` se stejným vzorem (hlasité selhání místo tichého pokračování).
+4. Ověřeno: PowerShell parser (`[System.Management.Automation.PSParser]::Tokenize`) potvrzuje syntaktickou správnost.
+
+### Otevřené body
+- Pořád nevíme, **proč** venv na kamarádově stroji reálně selhalo (MS Store stub Pythonu je nejpravděpodobnější z historie projektu, ale nepotvrzeno) - až se instalátor přebuildovaný s touto opravou znovu spustí, mělo by to teď ukázat konkrétní čitelnou chybovou hlášku.
+- `ZvukCZ1.1\dist\ZvukCZ_Install.exe` zatím **nepřebuildován** s touto opravou - čeká se na pokyn uživatele (stejný vzor jako dřív).
+- Necommitnuto.
