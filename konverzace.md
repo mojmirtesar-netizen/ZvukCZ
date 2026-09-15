@@ -524,3 +524,17 @@ Uživatel po vtipné poznámce "to už máme verzi přinejmenším 1.17" (kolikr
 - Na uživatelovo doplňující přání přidána i **položka v tray menu appky** (`loopback_translator.py`, `ZvukCZ1.1` i kořen): nová funkce `_read_version()` čte `VERSION` vedle skriptu, menu má navíc disabled (šedou, neklikací) položku `Verze X.Y.Z` (pystray `MenuItem(..., None, enabled=False)` - ověřeno izolovaně, že to pystray podporuje) mezi "Resetovat pozici" a "Ukončit".
 - **Ověřeno naostro**: appka na vývojovém stroji restartována (`stop.bat`/`start.bat`) s novým kódem, `zvukcz.log` čistý (žádná chyba při startu, tray thread se spustil v pořádku).
 - `ZvukCZ1.1\dist\ZvukCZ_Install.exe` přebuildován (verze `1.0.1`, čtvrtý rebuild dnes).
+
+## 38. Uninstall naostro na živé appce + doplnění odinstalace Pythonu
+
+Uživatel požádal spustit `uninstall.bat` na živé appce na vývojovém stroji a zkontrolovat, že se vše smazalo.
+
+- **Nalezen falešný poplach**: po prvním běhu zůstala instalační složka nesmazaná ("Cannot remove the item ... because it is in use", zachyceno správně přes `%TEMP%\zvukcz_uninstall_error.log` mechanismus z bodu 36). Příčina: PowerShell relace, která uninstall spouštěla, měla tu samou složku nastavenou jako aktuální adresář (`Set-Location`) z předchozího příkazu - Windows nedovolí smazat složku, která je CWD nějakého běžícího procesu. **Není to bug appky** - je to jen artefakt způsobu testování (reálný uživatel spouštějící `uninstall.bat` dvojklikem z Průzkumníku by tohle nezažil, protože `cmd.exe`/`uninstall.bat` proces sám skončí a uvolní zámek dřív, než deleter na pozadí zkusí mazat). Po přesunu mimo složku proběhlo smazání okamžitě bez chyby. Potvrzuje to ale, že error-log mechanismus z bodu 36 funguje správně i naostro.
+- **Finální kontrola potvrdila**: instalační složka pryč, zástupce na ploše pryč, 0 běžících python procesů.
+- Uživatel si všiml, že **Python zůstal nainstalovaný** - připomnělo to jeho dřívější přání z bodu 36 ("i toto by podle mě mělo být v uninstalu"), které se do kódu tehdy nedostalo.
+
+### Doplněno: volitelná odinstalace Pythonu v `uninstall_helper.ps1`
+- Nový krok mezi smazáním zástupce a spuštěním self-delete mechanismu: `winget list --id Python.Python.3.13 -e` (ověřeno přímým testem, že vrací exit 0 při nalezení, nenulový HRESULT při nenalezení - ne odhadem) zjistí, jestli je Python 3.13 nainstalovaný. Pokud ano, **zvlášť se zeptá** ("napis 'ano' pro odinstalaci, cokoliv jineho preskoci") - úmyslně oddělené potvrzení od hlavního "ano" na smazání appky, protože uživatel může Python používat i pro něco jiného a nechtěli jsme to smazat automaticky bez ptaní.
+- Úvodní shrnutí na začátku skriptu doplněno o zmínku "(volitelně, zvlášť se zeptá) Python 3.13...".
+- **Ověřeno izolovaným testem** (dočasná testovací složka, ne živá appka): piped vstup `"ano\nne\n"` - správně detekoval nainstalovaný Python, zeptal se, respektoval "ne" (Python zůstal), složka se smazala. `python --version` po testu potvrdil, že Python skutečně zůstal nedotčený.
+- Synchronizováno do kořene, `ZvukCZ1.1\dist\ZvukCZ_Install.exe` přebuildován (verze `1.0.2`, pátý rebuild dnes).
