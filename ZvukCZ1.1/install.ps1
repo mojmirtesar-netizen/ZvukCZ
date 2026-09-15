@@ -18,11 +18,19 @@ function Refresh-Path {
 function Find-Python {
     $cmd = Get-Command python -ErrorAction SilentlyContinue
     if ($cmd) {
-        $ver = & python --version 2>&1
+        # 2>&1 na externim .exe by tady byl nebezpecny: PowerShell zabali kazdy
+        # radek stderr jako NativeCommandError, a s $ErrorActionPreference =
+        # "Stop" se z toho stane neodchycena ukoncujici vyjimka - presne tohle
+        # se stalo s MS Store "python" stubem (pise na stderr "Python nebyl
+        # nalezen..."), skript spadl uplne na zacatku bez jakekoliv hlasky.
+        # 2>$null misto toho stderr jen zahodi.
+        $ver = & python --version 2>$null
         if ($ver -match "Python 3\.(1[1-9]|[2-9]\d)") { return $cmd.Source }
     }
     return $null
 }
+
+try {
 
 Write-Host "=== Mumble do CZ - instalace (NVIDIA GPU) ===" -ForegroundColor Cyan
 Write-Host ""
@@ -129,3 +137,12 @@ Write-Host "Spusteni: start.bat"
 Write-Host "Zastaveni: stop.bat"
 Write-Host "Odinstalace: uninstall.bat"
 Pause-Konec
+
+}
+catch {
+    Write-Host ""
+    Write-Host "NEOCEKAVANA CHYBA:" -ForegroundColor Red
+    Write-Host $_.Exception.Message -ForegroundColor Red
+    Pause-Konec
+    exit 1
+}

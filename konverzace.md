@@ -460,7 +460,27 @@ Druhá, spolupůsobící chyba: `Read-Host "Stiskni Enter pro konec"` uvnitř zk
 3. Po `pip install` přidána kontrola `$LASTEXITCODE -ne 0` se stejným vzorem (hlasité selhání místo tichého pokračování).
 4. Ověřeno: PowerShell parser (`[System.Management.Automation.PSParser]::Tokenize`) potvrzuje syntaktickou správnost.
 
+Uživatel schválil rebuild+commit (`47aba4b`) a poslal nový `.exe` kamarádovi/otestoval na dalším PC (s NVIDIA GPU) - **stejný příznak zůstal** (černé okno hned zmizelo, žádná ikona, uninstall nic nesmazal), i s touto první opravou.
+
+## 35. Druhá vrstva stejného problému - `Find-Python` mělo vlastní tichý pád
+
+Uživatel poslal `G:\Error.txt`:
+```
+2) Kontrola Pythonu...
+ERROR: The running command stopped because the preference variable "ErrorActionPreference" or common parameter is set to Stop: Python nebyl nalezen; spus[ť...]
+```
+
+"Python nebyl nalezen; spusť..." je přesná česká hláška Windows pro App Execution Alias stub Pythonu z Microsoft Storu (stejný problém jako v úplně prvním bodu téhle konverzace) - potvrzuje, že testovaný stroj nemá skutečný Python, jen ten stub.
+
+### Skutečná příčina pádu (ne jen stub samotný)
+`Find-Python` volalo `& python --version 2>&1`. Sloučení stderr do výstupu (`2>&1`) u externího `.exe` v PowerShellu **zabalí každý řádek stderr jako `NativeCommandError`** - a s `$ErrorActionPreference = "Stop"` na začátku skriptu se z toho stane **neodchycená ukončující výjimka přímo uvnitř `Find-Python`**, mimo dosah opravy z bodu 34 (ta hlídala jen venv/pip, ne detekci Pythonu samotnou, a `Find-Python` byla volaná mimo `try/catch`). Skript spadl úplně na začátku kroku 2, bez jakékoliv Pause-Konec hlášky - přesně "okno se objeví a hned zmizí, nic se nenainstaluje".
+
+### Oprava (`install.ps1`, kořen i `ZvukCZ1.1`)
+1. `Find-Python`: `2>&1` → `2>$null` (zahodí stderr stubu místo jeho sloučení do chybového proudu; skutečný Python vypisuje verzi na stdout, takže detekce funguje beze změny).
+2. Celé tělo skriptu (od `Write-Host "=== ..."` po finální `Pause-Konec`) obaleno do `try { ... } catch { ... }` - libovolná další neočekávaná ukončující chyba (cokoliv jsme nepředvídali) teď vypíše hlášku a zavolá `Pause-Konec` místo tichého/okamžitého zavření okna. `exit 1` uvnitř `try` bloku `catch` nespouští (potvrzeno - `exit` ukončuje proces přímo, ne přes výjimku), takže existující řízené `exit 1` větve fungují beze změny.
+3. **Ověřeno lokálně bez zásahu do živé instalace**: `install.ps1` spuštěn izolovaně v dočasné složce (`powershell -File`, mimo `%USERPROFILE%\Zvuk to CZ`) - kroky 1-3 (NVIDIA RTX 4070 SUPER nalezena, reálný systémový Python nalezen přes opravenou `Find-Python`, `.venv` vytvořeno) proběhly OK, `pip install` spadl na nesouvisející problém (OSError: cesta k souboru příliš dlouhá - way kvůli hluboce zanořené testovací temp složce, ne appce) a **nová kontrola `$LASTEXITCODE` to správně zachytila a vypsala CHYBA hlášku** místo tichého pokračování - přímý důkaz, že oprava z bodu 34 funguje.
+4. `ZvukCZ1.1\dist\ZvukCZ_Install.exe` přebuildován podruhé s touto opravou.
+
 ### Otevřené body
-- Pořád nevíme, **proč** venv na kamarádově stroji reálně selhalo (MS Store stub Pythonu je nejpravděpodobnější z historie projektu, ale nepotvrzeno) - až se instalátor přebuildovaný s touto opravou znovu spustí, mělo by to teď ukázat konkrétní čitelnou chybovou hlášku.
-- `ZvukCZ1.1\dist\ZvukCZ_Install.exe` zatím **nepřebuildován** s touto opravou - čeká se na pokyn uživatele (stejný vzor jako dřív).
-- Necommitnuto.
+- Pořád nevíme jistě, jestli je to na obou testovaných strojích (kamarád i uživatelovo "další PC") stejná příčina (MS Store stub) - `Find-Python` teď ale i tak správně spadne do větve "Python nenalezen, instaluji přes winget", takže by to mělo fungovat samo, bez nutnosti to dál diagnostikovat, POKUD winget na těch strojích funguje.
+- Zatím necommitnuto (čeká se na pokyn uživatele).
