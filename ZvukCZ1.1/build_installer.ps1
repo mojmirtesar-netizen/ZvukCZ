@@ -15,7 +15,8 @@ $filesToEmbed = @(
     "uninstall.bat",
     "uninstall_helper.ps1",
     "requirements.txt",
-    "zvukcz.ico"
+    "zvukcz.ico",
+    "README.md"
 )
 
 Write-Host "Baleni souboru..."

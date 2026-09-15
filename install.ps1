@@ -84,13 +84,15 @@ if (Test-Path $keyFile) {
     Write-Host "6) DeepL klic uz je nastaveny, preskakuji."
 } else {
     Write-Host "6) DeepL API klic (volitelne - bez nej skript jen prepisuje anglicky, neprekada)."
+    Write-Host "   Zdarma (Free tier, 500 000 znaku/mesic): https://www.deepl.com/pro-api" -ForegroundColor Cyan
+    Write-Host "   Podrobny navod viz README.md."
     $key = $null
     try { $key = Read-Host "   Zadej DeepL API klic (nebo nech prazdne a stiskni Enter)" } catch { $key = $null }
     if ($key) {
         Set-Content -Path $keyFile -Value $key -NoNewline
         Write-Host "   Ulozeno." -ForegroundColor Green
     } else {
-        Write-Host "   Preskoceno, muzes doplnit pozdeji do souboru deepl_key.txt." -ForegroundColor Yellow
+        Write-Host "   Preskoceno, muzes doplnit pozdeji do souboru deepl_key.txt (viz README.md)." -ForegroundColor Yellow
     }
 }
 
