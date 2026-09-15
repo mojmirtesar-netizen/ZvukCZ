@@ -16,8 +16,18 @@ $filesToEmbed = @(
     "uninstall_helper.ps1",
     "requirements.txt",
     "zvukcz.ico",
-    "README.md"
+    "README.md",
+    "VERSION"
 )
+
+# Kazdy rebuild automaticky zvysi patch cislo (X.Y.Z -> X.Y.Z+1), aby se dalo
+# poznat, kterou verzi kdo ma nainstalovanou, bez nutnosti to hlidat rucne.
+$versionFile = Join-Path $root "VERSION"
+$versionParts = (Get-Content $versionFile -Raw).Trim().Split(".")
+$versionParts[2] = [string]([int]$versionParts[2] + 1)
+$version = $versionParts -join "."
+Set-Content -Path $versionFile -Value $version -NoNewline
+Write-Host "Verze: $version"
 
 Write-Host "Baleni souboru..."
 $embedded = @{}
@@ -32,7 +42,7 @@ $sb = New-Object System.Text.StringBuilder
 [void]$sb.AppendLine('$ErrorActionPreference = "Stop"')
 [void]$sb.AppendLine('$targetDir = Join-Path $env:USERPROFILE "Zvuk to CZ"')
 [void]$sb.AppendLine('New-Item -ItemType Directory -Force -Path $targetDir | Out-Null')
-[void]$sb.AppendLine('Write-Host "=== Mumble do CZ - instalace (NVIDIA GPU) ===" -ForegroundColor Cyan')
+[void]$sb.AppendLine("Write-Host `"=== Mumble do CZ - instalace v$version (NVIDIA GPU) ===`" -ForegroundColor Cyan")
 [void]$sb.AppendLine('Write-Host ""')
 [void]$sb.AppendLine('Write-Host "Cilova slozka: $targetDir"')
 [void]$sb.AppendLine('Write-Host ""')
@@ -87,6 +97,8 @@ Import-Module ps2exe
 Invoke-PS2EXE -InputFile $generatedPs1 `
     -OutputFile (Join-Path $distDir "ZvukCZ_Install.exe") `
     -Title "Mumble do CZ - instalace" `
+    -Version $version `
+    -Product "ZvukCZ" `
     -NoConsole:$false `
     -RequireAdmin:$false
 

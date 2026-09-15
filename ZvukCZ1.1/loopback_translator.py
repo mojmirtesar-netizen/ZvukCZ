@@ -41,6 +41,17 @@ from faster_whisper import WhisperModel
 
 # ---------------------------------------------------------------- nastavení
 
+def _read_version():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return "?"
+
+
+VERSION = _read_version()
+
 WHISPER_RATE = 16000
 CHUNK = 1024
 
@@ -609,6 +620,7 @@ class Overlay:
             pystray.MenuItem("Nastavení...", lambda icon, item: command_queue.put("settings")),
             pystray.MenuItem("Resetovat pozici", lambda icon, item: command_queue.put("reset_position")),
             pystray.Menu.SEPARATOR,
+            pystray.MenuItem(f"Verze {VERSION}", None, enabled=False),
             pystray.MenuItem("Ukončit", lambda icon, item: command_queue.put("quit")),
         )
         self.tray_icon = pystray.Icon(

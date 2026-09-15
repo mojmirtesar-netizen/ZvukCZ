@@ -512,4 +512,15 @@ Přesná diagnóza (izolovanými testy přímo v PowerShellu, ne odhadem):
 
 ### Otevřené body
 - Nevíme jistě, že kamarádův/uživatelův "další PC" mají STEJNOU příčinu (MS Store stub) jako tenhle test, ale mechanismus opravy (`try/catch` kolem `Find-Python`) řeší libovolnou variantu selhání detekce Pythonu, ne jen tenhle konkrétní scénář.
-- Zatím necommitnuto (čeká se na pokyn uživatele) - `install.ps1` (2. kolo oprav), `uninstall_helper.ps1` (retry logika), `ZvukCZ1.1\dist\ZvukCZ_Install.exe` (3. rebuild).
+- Commitnuto (`2f2b4a2`) - `install.ps1` (2. kolo oprav), `uninstall_helper.ps1` (retry logika), `ZvukCZ1.1\dist\ZvukCZ_Install.exe` (3. rebuild).
+
+## 37. Jednoduché verzování appky a instalátoru
+
+Uživatel po vtipné poznámce "to už máme verzi přinejmenším 1.17" (kolikrát jsme dnes přebuildovali) požádal o přidání jednoduchého verzování.
+
+- Nový soubor `VERSION` (kořen i `ZvukCZ1.1\`, prostý text, např. `1.0.1`) - zdroj pravdy pro číslo verze.
+- `install.ps1` (kořen i `ZvukCZ1.1`) čte `VERSION` vedle sebe a zobrazuje ho v úvodní hlášce ("=== Mumble do CZ - instalace v1.0.1 (NVIDIA GPU) ===").
+- `build_installer.ps1` (kořen i `ZvukCZ1.1`) při každém běhu **automaticky zvýší patch číslo** (X.Y.Z → X.Y.Z+1) a zapíše zpět do `VERSION` - už se nemusí hlídat ručně. `VERSION` přidán do `$filesToEmbed` (balí se i do nainstalované složky). `Invoke-PS2EXE` teď dostává `-Version`/`-Product "ZvukCZ"`, takže i samotný `.exe` má ve vlastnostech Windows (karta Podrobnosti) reálné číslo verze - ověřeno přes `(Get-Item ...).VersionInfo` po rebuildu (`FileVersion`/`ProductVersion` = `1.0.1`).
+- Na uživatelovo doplňující přání přidána i **položka v tray menu appky** (`loopback_translator.py`, `ZvukCZ1.1` i kořen): nová funkce `_read_version()` čte `VERSION` vedle skriptu, menu má navíc disabled (šedou, neklikací) položku `Verze X.Y.Z` (pystray `MenuItem(..., None, enabled=False)` - ověřeno izolovaně, že to pystray podporuje) mezi "Resetovat pozici" a "Ukončit".
+- **Ověřeno naostro**: appka na vývojovém stroji restartována (`stop.bat`/`start.bat`) s novým kódem, `zvukcz.log` čistý (žádná chyba při startu, tray thread se spustil v pořádku).
+- `ZvukCZ1.1\dist\ZvukCZ_Install.exe` přebuildován (verze `1.0.1`, čtvrtý rebuild dnes).

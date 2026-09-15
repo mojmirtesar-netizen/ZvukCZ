@@ -1,6 +1,8 @@
 # Instalator - Mumble do CZ (NVIDIA GPU verze)
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
+$versionFile = Join-Path $root "VERSION"
+$version = if (Test-Path $versionFile) { (Get-Content $versionFile -Raw).Trim() } else { "?" }
 
 # Read-Host uvnitr zkompilovaneho .exe (ps2exe) obcas tise selze (chybi
 # interaktivni konzole) - bez fallbacku by se okno zavrelo driv, nez si
@@ -38,7 +40,7 @@ function Find-Python {
 
 try {
 
-Write-Host "=== Mumble do CZ - instalace (NVIDIA GPU) ===" -ForegroundColor Cyan
+Write-Host "=== Mumble do CZ - instalace v$version (NVIDIA GPU) ===" -ForegroundColor Cyan
 Write-Host ""
 
 # 1) NVIDIA GPU
