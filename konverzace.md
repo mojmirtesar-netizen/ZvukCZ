@@ -483,4 +483,33 @@ ERROR: The running command stopped because the preference variable "ErrorActionP
 
 ### Otevřené body
 - Pořád nevíme jistě, jestli je to na obou testovaných strojích (kamarád i uživatelovo "další PC") stejná příčina (MS Store stub) - `Find-Python` teď ale i tak správně spadne do větve "Python nenalezen, instaluji přes winget", takže by to mělo fungovat samo, bez nutnosti to dál diagnostikovat, POKUD winget na těch strojích funguje.
-- Zatím necommitnuto (čeká se na pokyn uživatele).
+
+Uživatel poté rovnou na dalším PC znovu narazil na **stejný příznak i s touto opravou** - "Nenalezen Python: spust..." a hned poté "Stiskni Enter pro konec" (potvrzuje, že `try/catch` teď aspoň drží okno otevřené - pokrok), ale root cause zůstal. Uživatel se rozhodl (po nabídnuté bezpečnější alternativě - dočasně schovat Python jen přes PATH) přesto **odinstalovat Python naostro na vývojovém stroji** a testovat rovnou tady, at se to nemusí přenášet flashkou na vedlejší PC.
+
+## 36. Uninstall otestován naostro + nalezena a opravena TŘETÍ vrstva stejného problému (`2>$null` sám o sobě nestačí)
+
+Na explicitní pokyn uživatele: nejdřív otestován `uninstall.bat` naostro na živé instalaci (`%USERPROFILE%\Zvuk to CZ` na vývojovém stroji) - instalovaná kopie byla ze staršího instalátoru bez `uninstall.bat`/`uninstall_helper.ps1` (ty přibyly až po tomhle reálném installu), doplněny ručně ze zdrojáku, pak spuštěno naostro (`echo ano | .\uninstall.bat`).
+
+### Nalezena reálná chyba č. 3: `uninstall_helper.ps1` mazání složky nespolehlivé
+Zástupce na ploše se smazal OK, ale **složka se nesmazala celá** - `.venv` zmizelo, ale zbylo 13 souborů (`.py`, `.ps1`, `.bat`, logy). `Remove-Item -Recurse -Force -ErrorAction SilentlyContinue` na řádku 35 dělal jen **jeden pokus** po pevných 2s - pokud v tu chvíli byl nějaký soubor krátkodobě zamčený (uvolňování handlů po právě zastaveném procesu, nebo krátké "podívání" antiviru), `-ErrorAction SilentlyContinue` chybu potichu spolkl a zbytek zůstal ležet. Ověřeno manuálním opakováním `Remove-Item` o pár vteřin později - prošlo bez chyby, potvrzuje transientní zámek, ne trvalý problém.
+
+**Oprava**: `uninstall_helper.ps1` (kořen i `ZvukCZ1.1`) - mazání teď zkouší opakovaně (15× po 1s), a pokud selže úplně, zapíše chybu do `%TEMP%\zvukcz_uninstall_error.log` místo tichého zmizení. **Ověřeno izolovaným testem** (soubor uměle zamčený na pozadí 4s, starý kód by selhal po 2s, nový kód 3× neúspěšně zkusil a pak uspěl po uvolnění zámku - přesně reprodukuje a řeší pozorovanou chybu).
+
+### Nalezena reálná chyba č. 4 (skutečná příčina bodů 34-35, ne jen symptom): `2>$null` sám o sobě NESTAČÍ
+Po odinstalaci Pythonu (`winget uninstall --id Python.Python.3.13`) se stroj dostal do přesně stejného stavu jako testovací PC (`python` resolvuje jen na MS Store stub). Spuštění opraveného `install.ps1` (z bodu 34) **stále padalo** - ale teď aspoň čistě přes nový `try/catch` s hláškou "Python nebyl nalezen; spus...".
+
+Přesná diagnóza (izolovanými testy přímo v PowerShellu, ne odhadem):
+- `2>&1` I `2>$null` na externím `.exe` **oba** způsobí, že PowerShell zabalí každý řádek stderr jako `NativeCommandError` - **nezáleží na tom, KAM se stderr přesměruje**, jde o samotný akt přesměrování stderr operátorem `2>`. S `$ErrorActionPreference = "Stop"` se z toho vždy stane neodchycená ukončující výjimka.
+- Bez JAKÉHOKOLIV přesměrování (`& python --version` bez `2>...`) stderr prostě propadne do konzole normálně, bez pádu - ale pak by se ošklivá hláška stubu zobrazovala uživateli přímo.
+- **Jediné spolehlivé řešení**: `try { $ver = & python --version 2>$null } catch { $ver = "" }` - `try/catch` přímo kolem volání, `2>$null` navíc jen pro potlačení textu v běžném (nespadlém) případě.
+
+**Oprava** (`install.ps1`, kořen i `ZvukCZ1.1`): `Find-Python` obalen do `try/catch`. Stejný vzor preventivně přidán i do kroku 5 (ověření GPU), který měl identický `2>$null` bez try/catch (latentní riziko, nebyl přímo pozorován jako padající, ale mechanismus je stejný).
+
+### Ověřeno naostro end-to-end (na vývojovém stroji, Python fakt odinstalovaný)
+1. Izolovaný test v temp složce: krok 2 teď správně vypsal "Python nenalezen, instaluji pres winget..." **a `winget` automaticky stáhl a nainstaloval skutečný Python 3.13.15** - celá auto-recovery větev funguje. Pád na kroku 4 (`pip install`) byl znovu jen kvůli mé vlastní hluboce zanořené temp cestě (Windows Long Path limit), ne appce - a i tak správně zachyceno a nahlášeno.
+2. **Plný reálný běh** přímo zkompilovaného `ZvukCZ1.1\dist\ZvukCZ_Install.exe` (přebuildován potřetí) do skutečné cílové složky (`%USERPROFILE%\Zvuk to CZ`) - proběhlo **kompletně bez chyby**: Python auto-nainstalován, `.venv` vytvořeno, všechny balíčky nainstalovány, GPU ověřeno (1 zařízení), zástupce na ploše vytvořen.
+3. Appka spuštěna přes `start.bat` - `zvukcz.log` potvrzuje: našla loopback zařízení, model načten, proces běží. DeepL klíč ručně dokopírován z kořenové zálohy (needošel při neinteraktivním testu), appka je na vývojovém stroji zpátky ve stejném funkčním stavu jako před testováním.
+
+### Otevřené body
+- Nevíme jistě, že kamarádův/uživatelův "další PC" mají STEJNOU příčinu (MS Store stub) jako tenhle test, ale mechanismus opravy (`try/catch` kolem `Find-Python`) řeší libovolnou variantu selhání detekce Pythonu, ne jen tenhle konkrétní scénář.
+- Zatím necommitnuto (čeká se na pokyn uživatele) - `install.ps1` (2. kolo oprav), `uninstall_helper.ps1` (retry logika), `ZvukCZ1.1\dist\ZvukCZ_Install.exe` (3. rebuild).

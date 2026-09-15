@@ -18,13 +18,19 @@ function Refresh-Path {
 function Find-Python {
     $cmd = Get-Command python -ErrorAction SilentlyContinue
     if ($cmd) {
-        # 2>&1 na externim .exe by tady byl nebezpecny: PowerShell zabali kazdy
-        # radek stderr jako NativeCommandError, a s $ErrorActionPreference =
-        # "Stop" se z toho stane neodchycena ukoncujici vyjimka - presne tohle
-        # se stalo s MS Store "python" stubem (pise na stderr "Python nebyl
+        # Jakakoliv explicitni presmerovani stderr (2>&1, 2>$null, ...) na
+        # externim .exe zabali KAZDY radek stderr jako NativeCommandError -
+        # a s $ErrorActionPreference = "Stop" se z toho stane neodchycena
+        # ukoncujici vyjimka, bez ohledu na to, kam presmerovani miri (proste
+        # 2>$null NESTACI samo o sobe, overeno testem). Presne tohle se stalo
+        # s MS Store "python" stubem (pise na stderr "Python nebyl
         # nalezen..."), skript spadl uplne na zacatku bez jakekoliv hlasky.
-        # 2>$null misto toho stderr jen zahodi.
-        $ver = & python --version 2>$null
+        # Reseni: try/catch primo kolem volani.
+        try {
+            $ver = & python --version 2>$null
+        } catch {
+            $ver = ""
+        }
         if ($ver -match "Python 3\.(1[1-9]|[2-9]\d)") { return $cmd.Source }
     }
     return $null
@@ -105,7 +111,13 @@ Write-Host "   OK" -ForegroundColor Green
 # 5) over GPU
 Write-Host ""
 Write-Host "5) Overeni GPU..."
-$cudaCount = & $venvPython -c "import ctranslate2; print(ctranslate2.get_cuda_device_count())" 2>$null
+# try/catch ze stejneho duvodu jako u Find-Python - 2>$null samo o sobe
+# nestaci, kdyby ctranslate2 pri importu neco vypsal na stderr.
+try {
+    $cudaCount = & $venvPython -c "import ctranslate2; print(ctranslate2.get_cuda_device_count())" 2>$null
+} catch {
+    $cudaCount = ""
+}
 if ($cudaCount -match "^\d+$" -and [int]$cudaCount -ge 1) {
     Write-Host "   OK, GPU pripraveno ($cudaCount zarizeni)" -ForegroundColor Green
 } else {

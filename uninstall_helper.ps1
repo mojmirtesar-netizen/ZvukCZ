@@ -29,10 +29,25 @@ if (Test-Path $desktopShortcut) {
 # Tenhle skript bezi ZEVNITR mazane slozky, takze slozku nemuze smazat sam
 # sebe primo - spusti se oddeleny proces mimo slozku (v %TEMP%), ktery po
 # kratke prodleve (az tenhle skript skonci a uvolni soubor) slozku smaze.
+# Jeden pokus s pevnou prodlevou 2s nestacil pri realnem testu - uvolneni
+# souborovych handlu po prave zastavenem procesu (nebo kratke "podivani"
+# antiviru) muze trvat dele, Remove-Item -Recurse se pak tise zastavi v
+# pulce (-ErrorAction SilentlyContinue chybu polkne). Opraveno opakovanymi
+# pokusy misto jednoho.
 $tempScript = Join-Path $env:TEMP "zvukcz_uninstall_$([guid]::NewGuid().ToString('N')).ps1"
 $deleterScript = @"
-Start-Sleep -Seconds 2
-Remove-Item -LiteralPath '$targetDir' -Recurse -Force -ErrorAction SilentlyContinue
+`$target = '$targetDir'
+for (`$i = 0; `$i -lt 15; `$i++) {
+    Start-Sleep -Seconds 1
+    try {
+        Remove-Item -LiteralPath `$target -Recurse -Force -ErrorAction Stop
+        break
+    } catch {
+        if (`$i -eq 14) {
+            Add-Content -Path (Join-Path `$env:TEMP 'zvukcz_uninstall_error.log') -Value "Smazani slozky `$target selhalo po 15 pokusech: `$_"
+        }
+    }
+}
 Remove-Item -LiteralPath '$tempScript' -Force -ErrorAction SilentlyContinue
 "@
 Set-Content -Path $tempScript -Value $deleterScript -Encoding UTF8
