@@ -1,24 +1,11 @@
-# Sestavi jeden spustitelny ZvukCZ_Install.exe, ktery v sobe nese vsechny
-# potrebne soubory a pri spusteni je rozbali + provede celou instalaci.
+# Sestavi dva spustitelne soubory bez konzole (ps2exe -NoConsole):
+#   ZvukCZ_Uninstall.exe - zkompilovany z uninstall_gui.ps1, vlozeny do
+#                           instalatoru jako jeden z rozbalovanych souboru
+#   ZvukCZ_Install.exe   - install_gui.ps1 + vsechny potrebne soubory (base64)
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 $distDir = Join-Path $root "dist"
 New-Item -ItemType Directory -Force -Path $distDir | Out-Null
-
-$filesToEmbed = @(
-    "loopback_translator.py",
-    "run.ps1",
-    "start.bat",
-    "stop.bat",
-    "start_helper.ps1",
-    "stop_helper.ps1",
-    "uninstall.bat",
-    "uninstall_helper.ps1",
-    "requirements.txt",
-    "zvukcz.ico",
-    "README.md",
-    "VERSION"
-)
 
 # Kazdy rebuild automaticky zvysi patch cislo (X.Y.Z -> X.Y.Z+1), aby se dalo
 # poznat, kterou verzi kdo ma nainstalovanou, bez nutnosti to hlidat rucne.
@@ -29,78 +16,73 @@ $version = $versionParts -join "."
 Set-Content -Path $versionFile -Value $version -NoNewline
 Write-Host "Verze: $version"
 
-Write-Host "Baleni souboru..."
-$embedded = @{}
-foreach ($f in $filesToEmbed) {
-    $bytes = [System.IO.File]::ReadAllBytes((Join-Path $root $f))
-    $embedded[$f] = [System.Convert]::ToBase64String($bytes)
-    Write-Host "   + $f ($($bytes.Length) B)"
+Import-Module ps2exe
+$iconFile = Join-Path $root "zvukcz.ico"
+
+Write-Host ""
+Write-Host "Kompiluji ZvukCZ_Uninstall.exe..."
+$uninstallExe = Join-Path $distDir "ZvukCZ_Uninstall.exe"
+Invoke-PS2EXE -InputFile (Join-Path $root "uninstall_gui.ps1") `
+    -OutputFile $uninstallExe `
+    -IconFile $iconFile `
+    -Title "Mumble do CZ - odinstalace" `
+    -Version $version `
+    -Product "ZvukCZ" `
+    -NoConsole:$true `
+    -RequireAdmin:$false
+
+# Soubory, ktere ZvukCZ_Install.exe pri spusteni rozbali do cilove slozky.
+# ZvukCZ_Uninstall.exe se bere uz zkompilovany (z distDir), aby odinstalace
+# taky bezela jako okno bez konzole - viz vyse.
+$filesToEmbed = @{
+    "loopback_translator.py" = Join-Path $root "loopback_translator.py"
+    "run.ps1"                = Join-Path $root "run.ps1"
+    "start.bat"               = Join-Path $root "start.bat"
+    "stop.bat"                = Join-Path $root "stop.bat"
+    "start_helper.ps1"        = Join-Path $root "start_helper.ps1"
+    "stop_helper.ps1"         = Join-Path $root "stop_helper.ps1"
+    "requirements.txt"        = Join-Path $root "requirements.txt"
+    "zvukcz.ico"              = $iconFile
+    "README.md"                = Join-Path $root "README.md"
+    "VERSION"                  = $versionFile
+    "ZvukCZ_Uninstall.exe"     = $uninstallExe
 }
 
-# --- preambule: cilova slozka + rozbaleni vlozenych souboru ---
+Write-Host ""
+Write-Host "Baleni souboru..."
+$embedded = @{}
+foreach ($name in $filesToEmbed.Keys) {
+    $bytes = [System.IO.File]::ReadAllBytes($filesToEmbed[$name])
+    $embedded[$name] = [System.Convert]::ToBase64String($bytes)
+    Write-Host "   + $name ($($bytes.Length) B)"
+}
+
+# --- preambule: vlozena verze + vlozene soubory, pak cely install_gui.ps1 ---
 $sb = New-Object System.Text.StringBuilder
 [void]$sb.AppendLine('$ErrorActionPreference = "Stop"')
-[void]$sb.AppendLine('$targetDir = Join-Path $env:USERPROFILE "Zvuk to CZ"')
-[void]$sb.AppendLine('New-Item -ItemType Directory -Force -Path $targetDir | Out-Null')
-[void]$sb.AppendLine("Write-Host `"=== Mumble do CZ - instalace v$version (NVIDIA GPU) ===`" -ForegroundColor Cyan")
-[void]$sb.AppendLine('Write-Host ""')
-[void]$sb.AppendLine('Write-Host "Cilova slozka: $targetDir"')
-[void]$sb.AppendLine('Write-Host ""')
-[void]$sb.AppendLine('Write-Host "0) Rozbaluji soubory..."')
-[void]$sb.AppendLine('$files = @{')
+[void]$sb.AppendLine("`$Global:EmbeddedVersion = '$version'")
+[void]$sb.AppendLine('$Global:EmbeddedFiles = @{')
 foreach ($k in $embedded.Keys) {
     [void]$sb.AppendLine("    '$k' = '$($embedded[$k])'")
 }
 [void]$sb.AppendLine('}')
-[void]$sb.AppendLine(@'
-foreach ($name in $files.Keys) {
-    $bytes = [System.Convert]::FromBase64String($files[$name])
-    [System.IO.File]::WriteAllBytes((Join-Path $targetDir $name), $bytes)
-}
-Write-Host "   OK" -ForegroundColor Green
-Write-Host ""
-'@)
-
-# --- zbytek instalacni logiky prevzaty z install.ps1, $root -> $targetDir ---
-$installLogic = Get-Content (Join-Path $root "install.ps1") -Raw
-$installLogic = $installLogic -replace '(?m)^\$root = \$PSScriptRoot\r?\n', ''
-$installLogic = $installLogic -replace '(?m)^# Instalator.*\r?\n', ''
-$installLogic = $installLogic -replace '\$root\b', '$targetDir'
-[void]$sb.AppendLine($installLogic)
-
-# --- zastupce na plose ---
-[void]$sb.AppendLine(@'
-$shortcutPath = Join-Path ([Environment]::GetFolderPath("Desktop")) "ZvukCZ.lnk"
-try {
-    $wsh = New-Object -ComObject WScript.Shell
-    $sc = $wsh.CreateShortcut($shortcutPath)
-    $sc.TargetPath = "powershell.exe"
-    $sc.Arguments = "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$targetDir\start_helper.ps1`""
-    $sc.WorkingDirectory = $targetDir
-    $sc.IconLocation = "$targetDir\zvukcz.ico"
-    $sc.Description = "ZvukCZ - preklad systemoveho zvuku do titulku"
-    $sc.Save()
-    Write-Host "Zastupce na plose vytvoren: $shortcutPath" -ForegroundColor Green
-} catch {
-    Write-Host "Zastupce na plose se nepodarilo vytvorit: $_" -ForegroundColor Yellow
-}
-'@)
-
-[void]$sb.AppendLine('Write-Host "Slozka: $targetDir"')
+[void]$sb.AppendLine((Get-Content (Join-Path $root "install_gui.ps1") -Raw))
 
 $generatedPs1 = Join-Path $distDir "ZvukCZ_Install_generated.ps1"
 Set-Content -Path $generatedPs1 -Value $sb.ToString() -Encoding UTF8
 
 Write-Host ""
-Write-Host "Kompiluji do .exe (ps2exe)..."
-Import-Module ps2exe
+Write-Host "Kompiluji ZvukCZ_Install.exe..."
 Invoke-PS2EXE -InputFile $generatedPs1 `
     -OutputFile (Join-Path $distDir "ZvukCZ_Install.exe") `
+    -IconFile $iconFile `
     -Title "Mumble do CZ - instalace" `
     -Version $version `
     -Product "ZvukCZ" `
-    -NoConsole:$false `
+    -NoConsole:$true `
     -RequireAdmin:$false
 
 Write-Host ""
-Write-Host "Hotovo: $(Join-Path $distDir 'ZvukCZ_Install.exe')" -ForegroundColor Cyan
+Write-Host "Hotovo:" -ForegroundColor Cyan
+Write-Host "  $(Join-Path $distDir 'ZvukCZ_Install.exe')"
+Write-Host "  $uninstallExe"
