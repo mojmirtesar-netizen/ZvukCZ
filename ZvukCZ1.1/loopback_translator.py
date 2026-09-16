@@ -24,6 +24,7 @@ import time
 import tkinter as tk
 from tkinter import colorchooser
 from tkinter import font as tkfont
+from tkinter import ttk
 
 for _pkg in ("cublas", "cudnn"):
     _bin = os.path.join(sysconfig.get_paths()["purelib"], "nvidia", _pkg, "bin")
@@ -66,6 +67,13 @@ command_queue: queue.Queue = queue.Queue()   # akce z tray ikonky / klávesovýc
 running_event = threading.Event()   # vypnuto = poslech/přepis pozastaven (tray Start/Stop)
 running_event.set()
 
+# Nastaveno pri kliknuti na "Start" v tray (přechod ze Stop -> Start), nebo
+# pri zmene vyberu zvukoveho zarizeni v Nastaveni - signal pro capture()
+# vlakno, at se znovu podiva, jake zarizeni ma poslouchat (rucni vyber, nebo
+# vychozi vystup Windows) a prepne se na nej, misto aby zustalo napořad u
+# zarizeni zjisteneho jen pri startu appky.
+recheck_device_event = threading.Event()
+
 SUBTITLE_SECONDS = 7.0   # jak dlouho titulek zůstane na obrazovce
 
 SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "overlay_settings.json")
@@ -82,6 +90,10 @@ DEFAULT_SETTINGS = {
     "silence_gap": 0.8,       # s ticha = konec promluvy
     "min_speech": 0.4,        # kratší úseky zahodím
     "max_speech": 7.0,        # delší promluvu rozseknu
+    "output_device": "",      # prazdne = systemovy vychozi vystup; jinak presne
+                              # jmeno loopback zarizeni z list_output_devices()
+    "output_device_index": None,  # pojistka pro rozliseni zarizeni se stejnym
+                                   # jmenem (viz list_output_devices)
 }
 
 
@@ -127,8 +139,51 @@ def to_czech(text: str) -> str:
 
 # ---------------------------------------------------------------- zdroj zvuku
 
-def find_loopback(p):
-    """Najde loopback zařízení odpovídající aktuálnímu výstupu."""
+def list_output_devices():
+    """Vrátí [(zobrazované_jméno, skutečné_jméno, index)] dostupných loopback
+    zařízení pro výběr v Nastavení. Skutečné_jméno (+ index jako pojistka)
+    se ukládá do settings a používá pro přesné dohledání v find_loopback().
+
+    Dvě fyzicky odlišná zařízení (např. stejný monitor připojený přes HDMI
+    i DisplayPort) můžou mít úplně stejné 'name' - PortAudio/WASAPI pro ně
+    nedává k dispozici žádné jiné odlišující pole. Zobrazovanému jménu se
+    pak připojí pořadové číslo, ať jde v seznamu rozeznat."""
+    devices = []
+    with pyaudio.PyAudio() as p:
+        for lb in p.get_loopback_device_info_generator():
+            name = lb["name"]
+            display = name[:-11] if name.endswith(" [Loopback]") else name
+            devices.append((display, name, lb["index"]))
+
+    counts = {}
+    for display, _name, _index in devices:
+        counts[display] = counts.get(display, 0) + 1
+    seen = {}
+    result = []
+    for display, name, index in devices:
+        if counts[display] > 1:
+            seen[display] = seen.get(display, 0) + 1
+            display = f"{display} (#{seen[display]})"
+        result.append((display, name, index))
+    return result
+
+
+def find_loopback(p, preferred_name=None, preferred_index=None):
+    """Najde loopback zařízení. Je-li preferred_name zadané (ruční výběr v
+    Nastavení), použije přesně tohle zařízení - a pokud existuje víc zařízení
+    se stejným jménem (viz list_output_devices), pro rozlišení použije
+    preferred_index. Jinak (prázdné, nebo zařízení už neexistuje - např.
+    odpojený monitor) spadne zpět na aktuální výchozí výstup Windows."""
+    if preferred_name:
+        matches = [lb for lb in p.get_loopback_device_info_generator() if lb["name"] == preferred_name]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            for m in matches:
+                if m["index"] == preferred_index:
+                    return m
+            return matches[0]
+
     wasapi = p.get_host_api_info_by_type(pyaudio.paWASAPI)
     speakers = p.get_device_info_by_index(wasapi["defaultOutputDevice"])
 
@@ -145,21 +200,25 @@ def find_loopback(p):
     )
 
 
+def _open_device_stream(p, dev):
+    rate = int(dev["defaultSampleRate"])
+    channels = int(dev["maxInputChannels"])
+    print(f"Poslouchám: {dev['name']}  ({rate} Hz, {channels} kanálů)\n")
+    stream = p.open(
+        format=pyaudio.paInt16,
+        channels=channels,
+        rate=rate,
+        frames_per_buffer=CHUNK,
+        input=True,
+        input_device_index=dev["index"],
+    )
+    return stream, rate, channels
+
+
 def capture():
     with pyaudio.PyAudio() as p:
-        dev = find_loopback(p)
-        rate = int(dev["defaultSampleRate"])
-        channels = int(dev["maxInputChannels"])
-        print(f"Poslouchám: {dev['name']}  ({rate} Hz, {channels} kanálů)\n")
-
-        stream = p.open(
-            format=pyaudio.paInt16,
-            channels=channels,
-            rate=rate,
-            frames_per_buffer=CHUNK,
-            input=True,
-            input_device_index=dev["index"],
-        )
+        dev = find_loopback(p, settings.get("output_device"), settings.get("output_device_index"))
+        stream, rate, channels = _open_device_stream(p, dev)
 
         chunks = []
         last_sound = 0.0
@@ -180,6 +239,26 @@ def capture():
             work_queue.put(resample_poly(audio, WHISPER_RATE, rate))
 
         while True:
+            if recheck_device_event.is_set():
+                recheck_device_event.clear()
+                try:
+                    new_dev = find_loopback(p, settings.get("output_device"), settings.get("output_device_index"))
+                except RuntimeError:
+                    new_dev = None
+                if new_dev is not None and new_dev["name"] != dev["name"]:
+                    print(f"Vychozi vystup zmenen, prepinam na: {new_dev['name']}")
+                    try:
+                        stream.stop_stream()
+                        stream.close()
+                    except Exception:
+                        pass
+                    dev = new_dev
+                    stream, rate, channels = _open_device_stream(p, dev)
+                    # rozdelana veta by mela jiny sample rate/pocet kanalu -
+                    # zahodit ji misto rizika zkomoleneho prepisu
+                    chunks = []
+                    speaking = False
+
             data = stream.read(CHUNK, exception_on_overflow=False)
             if not running_event.is_set():
                 continue   # zvuk zahodíme, jen ať se nezaplní buffer (pauza z tray)
@@ -484,6 +563,23 @@ class Overlay:
             self.settings["max_speech"] = new_val
             save_settings(self.settings)
 
+        AUTO_DEVICE_LABEL = "Systémový výchozí"
+
+        def on_output_device(event=None):
+            selected = device_var.get()
+            if selected == AUTO_DEVICE_LABEL:
+                new_name, new_index = "", None
+            else:
+                new_name, new_index = device_map.get(selected, ("", None))
+            if new_name == self.settings.get("output_device", "") and new_index == self.settings.get(
+                "output_device_index"
+            ):
+                return
+            self.settings["output_device"] = new_name
+            self.settings["output_device_index"] = new_index
+            save_settings(self.settings)
+            recheck_device_event.set()  # prepnout hned, ne az pri pristim Start
+
         tk.Label(panel, text="Průhlednost").pack(anchor="w", padx=10, pady=(10, 0))
         op_scale = tk.Scale(panel, from_=10, to=100, orient="horizontal", length=220, command=on_opacity)
         op_scale.set(int(self.settings["opacity"] * 100))
@@ -503,6 +599,25 @@ class Overlay:
         color_btn.pack(padx=10, pady=10, fill="x")
 
         tk.Button(panel, text="Resetovat pozici", command=reset_position).pack(padx=10, pady=(0, 10), fill="x")
+
+        tk.Label(panel, text="Zdroj zvuku", font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=10, pady=(10, 0))
+        tk.Label(panel, text="Které zařízení poslouchat (změna zabere hned)").pack(
+            anchor="w", padx=10, pady=(2, 0)
+        )
+        devices = list_output_devices()
+        device_map = {display: (real, index) for display, real, index in devices}
+        display_names = [AUTO_DEVICE_LABEL] + [display for display, _real, _index in devices]
+        current_real = self.settings.get("output_device", "")
+        current_index = self.settings.get("output_device_index")
+        current_display = next(
+            (d for d, r, i in devices if r == current_real and i == current_index), AUTO_DEVICE_LABEL
+        )
+        device_var = tk.StringVar(value=current_display)
+        device_combo = ttk.Combobox(
+            panel, textvariable=device_var, values=display_names, state="readonly", width=32
+        )
+        device_combo.pack(padx=10, pady=(6, 10), fill="x")
+        device_combo.bind("<<ComboboxSelected>>", on_output_device)
 
         tk.Label(panel, text="Rozpoznávání řeči", font=("Segoe UI", 9, "bold")).pack(
             anchor="w", padx=10, pady=(10, 0)
@@ -729,6 +844,7 @@ class Overlay:
                         self._resize(" ")  # schovej titulek, ať tam nezustava zamrzlý
                     else:
                         running_event.set()
+                        recheck_device_event.set()  # Start = znovu over vychozi vystup
                     self._refresh_tray()
                 elif cmd == "reset_position":
                     self.settings["anchor_x"] = None
