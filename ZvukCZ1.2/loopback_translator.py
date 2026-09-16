@@ -34,6 +34,7 @@ for _pkg in ("cublas", "cudnn"):
 
 import keyboard
 import numpy as np
+import psutil
 import pyaudiowpatch as pyaudio
 import pystray
 from PIL import Image, ImageDraw
@@ -94,6 +95,11 @@ DEFAULT_SETTINGS = {
                               # jmeno loopback zarizeni z list_output_devices()
     "output_device_index": None,  # pojistka pro rozliseni zarizeni se stejnym
                                    # jmenem (viz list_output_devices)
+    "capture_mode": "device",     # "device" = zvukove zarizeni (viz vyse), nebo
+                                   # "process" = konkretni proces (WASAPI process
+                                   # loopback pres proc-tap), nezavisle na tom, na
+                                   # jake zarizeni je jeho vystup smerovany
+    "process_image_name": "mumble.exe",  # jmeno procesu pro "process" rezim
 }
 
 
@@ -215,10 +221,103 @@ def _open_device_stream(p, dev):
     return stream, rate, channels
 
 
+def find_process_pid(image_name):
+    """Najde PID prvního běžícího procesu s daným jménem (case-insensitive).
+    Vrátí None, pokud takový proces neběží."""
+    for proc in psutil.process_iter(["pid", "name"]):
+        try:
+            if proc.info["name"] and proc.info["name"].lower() == image_name.lower():
+                return proc.info["pid"]
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return None
+
+
+class _DeviceSource:
+    """Čte loopback zvuk z vybraného (nebo výchozího) výstupního zařízení -
+    stejné chování jako ZvukCZ1.1. read_block() vrací normalizované float32
+    pole tvaru (snímky, kanály), ať je výstup shodný s _ProcessSource."""
+
+    def __init__(self, p):
+        self._p = p
+        self.dev = find_loopback(p, settings.get("output_device"), settings.get("output_device_index"))
+        self.stream, self.rate, self.channels = _open_device_stream(p, self.dev)
+
+    def read_block(self):
+        data = self.stream.read(CHUNK, exception_on_overflow=False)
+        block = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+        return block.reshape(-1, self.channels)
+
+    def needs_switch(self):
+        try:
+            current = find_loopback(self._p, settings.get("output_device"), settings.get("output_device_index"))
+        except RuntimeError:
+            return False
+        return current["name"] != self.dev["name"]
+
+    def close(self):
+        try:
+            self.stream.stop_stream()
+            self.stream.close()
+        except Exception:
+            pass
+
+
+class _ProcessSource:
+    """Čte zvuk konkrétního procesu (např. Mumble) přes WASAPI process
+    loopback (proc-tap) - nezávisle na tom, na jaké fyzické zařízení je jeho
+    výstup ve Windows nasměrovaný (viz "Hlasitost aplikací a předvolby
+    zařízení"). Vždy 48kHz/stereo/float32 (proc-tap standardní formát)."""
+
+    def __init__(self, image_name):
+        self.image_name = image_name
+        self.pid = find_process_pid(image_name)
+        if self.pid is None:
+            raise RuntimeError(f"Proces '{image_name}' neběží")
+
+        from proctap import ProcessAudioCapture, STANDARD_SAMPLE_RATE, STANDARD_CHANNELS
+
+        self.rate = STANDARD_SAMPLE_RATE
+        self.channels = STANDARD_CHANNELS
+        self._cap = ProcessAudioCapture(pid=self.pid)
+        self._cap.start()
+        print(f"Poslouchám proces: {image_name} (PID {self.pid}, {self.rate} Hz, {self.channels} kanálů)\n")
+
+    def read_block(self):
+        data = self._cap.read(timeout=1.0)
+        if not data:
+            return None
+        return np.frombuffer(data, dtype=np.float32).reshape(-1, self.channels)
+
+    def needs_switch(self):
+        # proces mezitim skoncil/restartoval se (novy PID) - najit znovu
+        return not psutil.pid_exists(self.pid)
+
+    def close(self):
+        try:
+            self._cap.stop()
+        except Exception:
+            pass
+
+
+def _open_source(p):
+    """Otevře zdroj zvuku podle aktuálního nastavení. V "process" režimu, když
+    cílový proces zrovna neběží (typicky appka spuštěná dřív než Mumble),
+    zkouší to opakovaně po 3s misto tvrdého pádu vlákna."""
+    if settings.get("capture_mode", "device") == "process":
+        image_name = settings.get("process_image_name", "mumble.exe")
+        while True:
+            try:
+                return _ProcessSource(image_name)
+            except RuntimeError as exc:
+                print(f"[{exc}, zkouším znovu za 3s...]")
+                time.sleep(3)
+    return _DeviceSource(p)
+
+
 def capture():
     with pyaudio.PyAudio() as p:
-        dev = find_loopback(p, settings.get("output_device"), settings.get("output_device_index"))
-        stream, rate, channels = _open_device_stream(p, dev)
+        source = _open_source(p)
 
         chunks = []
         last_sound = 0.0
@@ -228,55 +327,52 @@ def capture():
             nonlocal chunks, speaking
             if not chunks:
                 return
-            raw = b"".join(chunks)
+            audio = np.concatenate(chunks, axis=0)
             chunks = []
             speaking = False
-            audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-            if channels > 1:
-                audio = audio.reshape(-1, channels).mean(axis=1)
-            if len(audio) / rate < settings["min_speech"]:
+            audio = audio.mean(axis=1) if audio.shape[1] > 1 else audio[:, 0]
+            if len(audio) / source.rate < settings["min_speech"]:
                 return
-            work_queue.put(resample_poly(audio, WHISPER_RATE, rate))
+            work_queue.put(resample_poly(audio, WHISPER_RATE, source.rate))
+
+        def switch_source():
+            nonlocal source, chunks, speaking
+            source.close()
+            source = _open_source(p)
+            # rozdelana veta by mela jiny sample rate/pocet kanalu/zdroj -
+            # zahodit ji misto rizika zkomoleneho prepisu
+            chunks = []
+            speaking = False
 
         while True:
             if recheck_device_event.is_set():
                 recheck_device_event.clear()
-                try:
-                    new_dev = find_loopback(p, settings.get("output_device"), settings.get("output_device_index"))
-                except RuntimeError:
-                    new_dev = None
-                if new_dev is not None and new_dev["name"] != dev["name"]:
-                    print(f"Vychozi vystup zmenen, prepinam na: {new_dev['name']}")
-                    try:
-                        stream.stop_stream()
-                        stream.close()
-                    except Exception:
-                        pass
-                    dev = new_dev
-                    stream, rate, channels = _open_device_stream(p, dev)
-                    # rozdelana veta by mela jiny sample rate/pocet kanalu -
-                    # zahodit ji misto rizika zkomoleneho prepisu
-                    chunks = []
-                    speaking = False
+                if source.needs_switch():
+                    print("Zdroj zvuku změněn, přepínám...")
+                    switch_source()
 
-            data = stream.read(CHUNK, exception_on_overflow=False)
+            block = source.read_block()
+            if block is None:
+                if source.needs_switch():
+                    print("Zdroj zvuku zmizel, zkouším se znovu připojit...")
+                    switch_source()
+                continue
             if not running_event.is_set():
                 continue   # zvuk zahodíme, jen ať se nezaplní buffer (pauza z tray)
-            block = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
             rms = float(np.sqrt(np.mean(block ** 2)))
             now = time.time()
 
             if rms > settings["silence_rms"]:
-                chunks.append(data)
+                chunks.append(block)
                 last_sound = now
                 speaking = True
             elif speaking:
-                chunks.append(data)   # krátké pauzy uvnitř věty si nechám
+                chunks.append(block)   # krátké pauzy uvnitř věty si nechám
                 if now - last_sound >= settings["silence_gap"]:
                     flush()
 
             if speaking:
-                dur = sum(len(c) for c in chunks) / 2 / channels / rate
+                dur = sum(len(c) for c in chunks) / source.rate
                 if dur >= settings["max_speech"]:
                     flush()
 
@@ -600,9 +696,28 @@ class Overlay:
 
         tk.Button(panel, text="Resetovat pozici", command=reset_position).pack(padx=10, pady=(0, 10), fill="x")
 
+        def on_capture_mode():
+            new_mode = capture_mode_var.get()
+            if new_mode == self.settings.get("capture_mode", "device"):
+                return
+            self.settings["capture_mode"] = new_mode
+            save_settings(self.settings)
+            device_combo.config(state="readonly" if new_mode == "device" else "disabled")
+            recheck_device_event.set()
+
         tk.Label(panel, text="Zdroj zvuku", font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=10, pady=(10, 0))
-        tk.Label(panel, text="Které zařízení poslouchat (změna zabere hned)").pack(
-            anchor="w", padx=10, pady=(2, 0)
+        capture_mode_var = tk.StringVar(value=self.settings.get("capture_mode", "device"))
+        tk.Radiobutton(
+            panel, text="Zvukové zařízení (obecné - Mumble, Discord, cokoliv)",
+            variable=capture_mode_var, value="device", command=on_capture_mode,
+        ).pack(anchor="w", padx=10, pady=(4, 0))
+        tk.Radiobutton(
+            panel, text=f"Konkrétně {self.settings.get('process_image_name', 'mumble.exe')} (přesnější, musí běžet)",
+            variable=capture_mode_var, value="process", command=on_capture_mode,
+        ).pack(anchor="w", padx=10)
+
+        tk.Label(panel, text="Které zařízení poslouchat (jen v režimu 'Zvukové zařízení')").pack(
+            anchor="w", padx=10, pady=(6, 0)
         )
         devices = list_output_devices()
         device_map = {display: (real, index) for display, real, index in devices}
@@ -618,6 +733,8 @@ class Overlay:
         )
         device_combo.pack(padx=10, pady=(6, 10), fill="x")
         device_combo.bind("<<ComboboxSelected>>", on_output_device)
+        if capture_mode_var.get() != "device":
+            device_combo.config(state="disabled")
 
         tk.Label(panel, text="Rozpoznávání řeči", font=("Segoe UI", 9, "bold")).pack(
             anchor="w", padx=10, pady=(10, 0)
