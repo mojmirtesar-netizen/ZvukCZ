@@ -47,9 +47,17 @@ nekopíruj mimo svůj počítač (soubor je záměrně v `.gitignore`).
   - **Posunout titulky** – přetažení titulkového boxu myší na jiné místo.
   - **Nastavení...** – průhlednost, velikost a barva textu, max. šířka,
     citlivost na ticho a délka promluv (rozpoznávání řeči).
+  - **Historie překladů...** – poloprůhledný overlay nad hrou se všemi
+    překlady (EN + CZ) od spuštění appky, kdyby titulek zmizel dřív, než ho
+    stihneš přečíst. Scroluje se kolečkem myši, přesouvá tažením za horní
+    lištu, velikost se mění úchytem vpravo dole. Klik do něj hře nebere
+    klávesnici. Schovat/ukázat jde i klávesovou zkratkou (nastavíš v
+    Nastavení), průhlednost má vlastní posuvník tamtéž. Totéž se průběžně
+    ukládá do `historie_prekladu.txt` ve složce appky (tlačítko „soubor“);
+    soubor se při každém spuštění appky přepíše.
   - **Resetovat pozici**.
   - **Ukončit**.
-- Klávesové zkratky pro Nastavení/Posun se dají nastavit v panelu
+- Klávesové zkratky pro Nastavení/Posun/Historii se dají nastavit v panelu
   Nastavení (ruční zápis nebo tlačítko "Nahrát...").
 
 Všechna nastavení se ukládají do `overlay_settings.json` a přežijí restart.

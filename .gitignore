@@ -12,3 +12,6 @@ __pycache__/
 zvukcz.log
 zvukcz.err.log
 zvukcz.pid
+
+# historie prekladu (prepisuje se pri kazdem spusteni)
+historie_prekladu.txt
