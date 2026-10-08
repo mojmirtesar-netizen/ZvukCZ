@@ -107,6 +107,8 @@ DEFAULT_SETTINGS = {
     "hotkey_settings": "",    # např. "ctrl+alt+n" - prázdné = vypnuto
     "hotkey_move": "",        # např. "ctrl+alt+m" - prázdné = vypnuto
     "hotkey_history": "",     # např. "ctrl+alt+h" - schovat/ukázat historii překladů
+    "show_subtitles": True,   # zobrazovat titulky (vypnuto = překlady jen v historii)
+    "show_history": False,    # okno historie otevřené (pamatuje se i přes restart)
     "history_opacity": 0.8,   # průhlednost overlaye s historií
     "history_x": None,        # poloha/velikost overlaye s historií; None = vpravo nahoře
     "history_y": None,
@@ -447,6 +449,8 @@ class Overlay:
         self._clear_job = None
         self.history_window = None
         self.history_text = None
+        self.show_subs_var = None   # zaskrtavatka Titulky/Historie v panelu Nastaveni
+        self.show_hist_var = None
 
         self.root = tk.Tk()
         self.root.overrideredirect(True)
@@ -475,6 +479,8 @@ class Overlay:
         self._set_clickthrough(True)
         self._start_tray()
         self._register_hotkeys()
+        if self.settings.get("show_history"):
+            self._toggle_history_window()   # bylo otevrene pri minulem behu
         self._poll()
 
     # ------------------------------------------------------------ vzhled/pozice
@@ -626,6 +632,8 @@ class Overlay:
             self.hk_settings_entry = None
             self.hk_move_entry = None
             self.hk_history_entry = None
+            self.show_subs_var = None
+            self.show_hist_var = None
             return
 
         panel = tk.Toplevel(self.root)
@@ -724,6 +732,35 @@ class Overlay:
             self.settings["output_device_index"] = new_index
             save_settings(self.settings)
             recheck_device_event.set()  # prepnout hned, ne az pri pristim Start
+
+        def on_show_subtitles():
+            visible = self.show_subs_var.get()
+            self.settings["show_subtitles"] = visible
+            save_settings(self.settings)
+            if not visible:
+                if self.move_mode:
+                    self._exit_move_mode()
+                if self._clear_job:
+                    self.root.after_cancel(self._clear_job)
+                    self._clear_job = None
+                self._resize(" ")   # schovat titulek, ktery je zrovna na obrazovce
+
+        def on_show_history():
+            open_now = self.history_window is not None and self.history_window.winfo_exists()
+            if self.show_hist_var.get() != open_now:
+                self._toggle_history_window()
+
+        tk.Label(panel, text="Zobrazit").pack(anchor="w", padx=10, pady=(10, 0))
+        show_row = tk.Frame(panel)
+        show_row.pack(anchor="w", padx=10)
+        self.show_subs_var = tk.BooleanVar(panel, value=self.settings.get("show_subtitles", True))
+        self.show_hist_var = tk.BooleanVar(
+            panel, value=self.history_window is not None and self.history_window.winfo_exists()
+        )
+        tk.Checkbutton(show_row, text="Titulky", variable=self.show_subs_var,
+                       command=on_show_subtitles).pack(side="left")
+        tk.Checkbutton(show_row, text="Historie", variable=self.show_hist_var,
+                       command=on_show_history).pack(side="left", padx=(10, 0))
 
         tk.Label(panel, text="Průhlednost").pack(anchor="w", padx=10, pady=(10, 0))
         op_scale = tk.Scale(panel, from_=10, to=100, orient="horizontal", length=220, command=on_opacity)
@@ -883,6 +920,8 @@ class Overlay:
             self.hk_settings_entry = None
             self.hk_move_entry = None
             self.hk_history_entry = None
+            self.show_subs_var = None
+            self.show_hist_var = None
             panel.destroy()
 
         panel.protocol("WM_DELETE_WINDOW", on_close)
@@ -965,6 +1004,16 @@ class Overlay:
 
         win.update_idletasks()
         self._set_noactivate(win)
+        self._set_show_history_setting(True)
+
+    def _set_show_history_setting(self, visible):
+        """Ulozi, jestli je historie otevrena, a srovna zaskrtavatko v Nastaveni
+        (historie se otevira/zavira i z tray menu, zkratkou nebo krizkem)."""
+        if self.settings.get("show_history") != visible:
+            self.settings["show_history"] = visible
+            save_settings(self.settings)
+        if self.show_hist_var is not None:
+            self.show_hist_var.set(visible)
 
     def _set_noactivate(self, win):
         """Klik do okna historie nesmi hre vzit fokus klavesnice.
@@ -1052,6 +1101,7 @@ class Overlay:
                 pass
         self.history_window = None
         self.history_text = None
+        self._set_show_history_setting(False)
 
     def _history_append(self, stamp, en, cz, force_scroll=False):
         text = self.history_text
@@ -1211,6 +1261,8 @@ class Overlay:
             while True:
                 stamp, en, text = overlay_queue.get_nowait()
                 self._history_append(stamp, en, text)
+                if not self.settings.get("show_subtitles", True):
+                    continue   # titulky vypnute v Nastaveni - preklad je jen v historii
                 self._resize(text)
                 if self._clear_job:
                     self.root.after_cancel(self._clear_job)

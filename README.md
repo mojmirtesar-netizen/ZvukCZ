@@ -45,8 +45,10 @@ nekopíruj mimo svůj počítač (soubor je záměrně v `.gitignore`).
 - Ikonka v system tray (u hodin) → pravé tlačítko:
   - **Start/Stop** – pozastaví/obnoví poslech (appka zůstává běžet).
   - **Posunout titulky** – přetažení titulkového boxu myší na jiné místo.
-  - **Nastavení...** – průhlednost, velikost a barva textu, max. šířka,
-    citlivost na ticho a délka promluv (rozpoznávání řeči).
+  - **Nastavení...** – zaškrtávátka **Zobrazit: Titulky / Historie**
+    (např. jen historie bez titulků, nebo naopak), průhlednost, velikost a
+    barva textu, max. šířka, citlivost na ticho a délka promluv
+    (rozpoznávání řeči). Otevřená historie se po restartu appky otevře znovu.
   - **Historie překladů...** – poloprůhledný overlay nad hrou se všemi
     překlady (EN + CZ) od spuštění appky, kdyby titulek zmizel dřív, než ho
     stihneš přečíst. Scroluje se kolečkem myši, přesouvá tažením za horní
