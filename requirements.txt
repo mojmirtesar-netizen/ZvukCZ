@@ -8,3 +8,5 @@ nvidia-cudnn-cu12
 pystray
 Pillow
 keyboard
+proc-tap
+psutil
