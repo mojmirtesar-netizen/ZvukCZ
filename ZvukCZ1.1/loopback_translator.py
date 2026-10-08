@@ -76,25 +76,6 @@ recheck_device_event = threading.Event()
 
 SUBTITLE_SECONDS = 7.0   # jak dlouho titulek zůstane na obrazovce
 
-# Historie prekladu - kdyz nekdo mluvi rychle, titulek zmizi driv, nez se da
-# precist. Vsechny preklady z aktualniho behu jdou do souboru (pri kazdem
-# spusteni appky se prepise) a do okna "Historie prekladu..." v tray menu.
-HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "historie_prekladu.txt")
-history: list = []                # (cas, en, cz) - sdilene mezi transcriber() a Overlay
-history_lock = threading.Lock()
-
-
-def history_add(en: str, cz: str):
-    stamp = time.strftime("%H:%M:%S")
-    with history_lock:
-        history.append((stamp, en, cz))
-    try:
-        with open(HISTORY_FILE, "a", encoding="utf-8") as f:
-            f.write(f"[{stamp}] EN: {en}\n           CZ: {cz}\n\n")
-    except OSError as exc:
-        print(f"[historii se nepodarilo zapsat: {exc}]")
-    return stamp
-
 SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "overlay_settings.json")
 DEFAULT_SETTINGS = {
     "opacity": 0.85,          # 0.1 - 1.0
@@ -105,12 +86,6 @@ DEFAULT_SETTINGS = {
     "anchor_y": None,         # spodní hrana boxu na ose Y; None = auto (u spodku obrazovky)
     "hotkey_settings": "",    # např. "ctrl+alt+n" - prázdné = vypnuto
     "hotkey_move": "",        # např. "ctrl+alt+m" - prázdné = vypnuto
-    "hotkey_history": "",     # např. "ctrl+alt+h" - schovat/ukázat historii překladů
-    "history_opacity": 0.8,   # průhlednost overlaye s historií
-    "history_x": None,        # poloha/velikost overlaye s historií; None = vpravo nahoře
-    "history_y": None,
-    "history_w": 520,
-    "history_h": 360,
     "silence_rms": 0.004,     # pod touto hlasitostí to beru jako ticho
     "silence_gap": 0.8,       # s ticha = konec promluvy
     "min_speech": 0.4,        # kratší úseky zahodím
@@ -355,10 +330,7 @@ class Overlay:
         self.tray_icon = None
         self.hk_settings_entry = None
         self.hk_move_entry = None
-        self.hk_history_entry = None
         self._clear_job = None
-        self.history_window = None
-        self.history_text = None
 
         self.root = tk.Tk()
         self.root.overrideredirect(True)
@@ -537,7 +509,6 @@ class Overlay:
             self.settings_panel = None
             self.hk_settings_entry = None
             self.hk_move_entry = None
-            self.hk_history_entry = None
             return
 
         panel = tk.Toplevel(self.root)
@@ -642,22 +613,6 @@ class Overlay:
         op_scale.set(int(self.settings["opacity"] * 100))
         op_scale.pack(padx=10)
 
-        def on_history_opacity(val):
-            new_opacity = int(float(val)) / 100
-            if new_opacity == self.settings["history_opacity"]:
-                return
-            self.settings["history_opacity"] = new_opacity
-            if self.history_window is not None:
-                self.history_window.attributes("-alpha", new_opacity)
-            save_settings(self.settings)
-
-        tk.Label(panel, text="Průhlednost historie překladů").pack(anchor="w", padx=10, pady=(10, 0))
-        hist_op_scale = tk.Scale(
-            panel, from_=20, to=100, orient="horizontal", length=220, command=on_history_opacity
-        )
-        hist_op_scale.set(int(self.settings["history_opacity"] * 100))
-        hist_op_scale.pack(padx=10)
-
         tk.Label(panel, text="Velikost textu").pack(anchor="w", padx=10, pady=(10, 0))
         size_scale = tk.Scale(panel, from_=12, to=40, orient="horizontal", length=220, command=on_font_size)
         size_scale.set(self.settings["font_size"])
@@ -727,7 +682,6 @@ class Overlay:
         def apply_hotkeys():
             self.settings["hotkey_settings"] = self.hk_settings_entry.get().strip()
             self.settings["hotkey_move"] = self.hk_move_entry.get().strip()
-            self.settings["hotkey_history"] = self.hk_history_entry.get().strip()
             self._register_hotkeys()
             save_settings(self.settings)
 
@@ -755,221 +709,15 @@ class Overlay:
             side="left", padx=(6, 0)
         )
 
-        tk.Label(panel, text="Klávesová zkratka – Historie překladů (napiš, nebo nahraj)").pack(
-            anchor="w", padx=10, pady=(10, 0)
-        )
-        row3 = tk.Frame(panel)
-        row3.pack(padx=10, fill="x")
-        self.hk_history_entry = tk.Entry(row3, width=20)
-        self.hk_history_entry.insert(0, self.settings.get("hotkey_history", ""))
-        self.hk_history_entry.pack(side="left", fill="x", expand=True)
-        tk.Button(row3, text="Nahrát...", command=lambda: self._record_hotkey("history")).pack(
-            side="left", padx=(6, 0)
-        )
-
         tk.Button(panel, text="Uložit zkratky", command=apply_hotkeys).pack(padx=10, pady=10, fill="x")
 
         def on_close():
             self.settings_panel = None
             self.hk_settings_entry = None
             self.hk_move_entry = None
-            self.hk_history_entry = None
             panel.destroy()
 
         panel.protocol("WM_DELETE_WINDOW", on_close)
-
-    # ------------------------------------------------------------ historie překladů
-
-    def _toggle_history_window(self):
-        if self.history_window is not None and self.history_window.winfo_exists():
-            self._close_history_window()
-            return
-
-        # Overlay bez ramecku nad hrou. NENI klikaci-skrz (jinak by neslo
-        # scrollovat koleckem), ale ma WS_EX_NOACTIVATE - klik/scroll do nej
-        # nebere hre fokus klavesnice. Schovat/ukazat jde tray menu nebo
-        # klavesovou zkratkou z Nastaveni.
-        bg = "#111111"
-        bar_bg = "#262626"
-        win = tk.Toplevel(self.root)
-        win.overrideredirect(True)
-        win.attributes("-topmost", True)
-        win.attributes("-alpha", self.settings["history_opacity"])
-        win.configure(bg=bg)
-        w = max(self.settings["history_w"], 250)
-        h = max(self.settings["history_h"], 150)
-        x = self.settings["history_x"]
-        y = self.settings["history_y"]
-        if x is None or y is None:
-            x, y = self.screen_w - w - 40, 80   # vychozi: vpravo nahore
-        win.geometry(f"{w}x{h}+{x}+{y}")
-        self.history_window = win
-
-        bar = tk.Frame(win, bg=bar_bg, cursor="fleur")
-        bar.pack(fill="x")
-        title = tk.Label(bar, text="Historie překladů", bg=bar_bg, fg="#cccccc", font=("Segoe UI", 10, "bold"))
-        title.pack(side="left", padx=8, pady=3)
-        btn_style = dict(bg=bar_bg, fg="#cccccc", activebackground="#444444", activeforeground="#ffffff",
-                         relief="flat", bd=0, font=("Segoe UI", 10), cursor="hand2", padx=6)
-        tk.Button(bar, text="✕", command=self._close_history_window, **btn_style).pack(side="right")
-        tk.Button(bar, text="soubor", command=self._open_history_file, **btn_style).pack(side="right")
-        for widget in (bar, title):
-            widget.bind("<ButtonPress-1>", self._on_history_press)
-            widget.bind("<B1-Motion>", self._on_history_move)
-            widget.bind("<ButtonRelease-1>", lambda _e: self._save_history_geometry())
-
-        text = tk.Text(
-            win, wrap="word", font=("Segoe UI", 11), bg=bg, fg="#ffffff",
-            bd=0, highlightthickness=0, padx=10, pady=6, cursor="arrow",
-        )
-        text.pack(fill="both", expand=True)
-        text.tag_config("time", foreground="#777777", font=("Segoe UI", 9))
-        text.tag_config("en", foreground="#9a9a9a", font=("Segoe UI", 10))
-        text.tag_config("cz", foreground=self.settings["text_color"], font=("Segoe UI", 12, "bold"))
-        self.history_text = text
-
-        # scrollovani koleckem - bind na cele okno, ne jen na text (lista atd.)
-        def on_wheel(event):
-            text.yview_scroll(int(-event.delta / 40), "units")
-            return "break"
-        for widget in (win, bar, title, text):
-            widget.bind("<MouseWheel>", on_wheel)
-        # vychozi chovani Text widgetu pri kliknuti (focus + oznaceni textu)
-        # si vynuti fokus a vytahne okno do popredi i pres WS_EX_NOACTIVATE -
-        # hra by ztratila klavesnici (overeno testem), proto klik vypnout
-        for seq in ("<Button-1>", "<B1-Motion>", "<Double-Button-1>", "<Triple-Button-1>"):
-            text.bind(seq, lambda _e: "break")
-
-        grip = tk.Label(win, text="◢", bg=bg, fg="#555555", cursor="size_nw_se", font=("Segoe UI", 9))
-        grip.place(relx=1.0, rely=1.0, anchor="se")
-        grip.bind("<ButtonPress-1>", self._on_history_press)
-        grip.bind("<B1-Motion>", self._on_history_resize)
-        grip.bind("<ButtonRelease-1>", lambda _e: self._save_history_geometry())
-
-        with history_lock:
-            entries = list(history)
-        for entry in entries:
-            self._history_append(*entry, force_scroll=True)
-        if not entries:
-            text.insert("end", "Zatím žádné překlady.\n", "time")
-        text.config(state="disabled")
-
-        win.update_idletasks()
-        self._set_noactivate(win)
-
-    def _set_noactivate(self, win):
-        """Klik do okna historie nesmi hre vzit fokus klavesnice.
-
-        Samotny WS_EX_NOACTIVATE nestaci - Tk na WM_MOUSEACTIVATE samo
-        odpovida "aktivovat" a okno vytahne do popredi (overeno testem).
-        Proto se window procedura okna (i vsech jeho vnitrnich oken, Tk ma
-        HWND pro kazdy widget) podtrhne a na WM_MOUSEACTIVATE vraci
-        MA_NOACTIVATE; vse ostatni jde beze zmeny do puvodni procedury Tk.
-        """
-        from ctypes import wintypes
-        GWL_EXSTYLE = -20
-        GWLP_WNDPROC = -4
-        WS_EX_NOACTIVATE = 0x08000000
-        WS_EX_TOOLWINDOW = 0x00000080   # bez ikonky na hlavnim panelu / v Alt+Tab
-        WM_MOUSEACTIVATE = 0x0021
-        MA_NOACTIVATE = 3
-        GA_ROOT = 2
-
-        user32 = ctypes.windll.user32
-        LRESULT = ctypes.c_ssize_t
-        WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
-        user32.SetWindowLongPtrW.restype = ctypes.c_void_p
-        user32.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
-        user32.CallWindowProcW.restype = LRESULT
-        user32.CallWindowProcW.argtypes = [ctypes.c_void_p, wintypes.HWND, wintypes.UINT,
-                                           wintypes.WPARAM, wintypes.LPARAM]
-
-        top = user32.GetAncestor(win.winfo_id(), GA_ROOT) or win.winfo_id()
-        style = user32.GetWindowLongW(top, GWL_EXSTYLE)
-        user32.SetWindowLongW(top, GWL_EXSTYLE, style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
-
-        hwnds = [top]
-        ENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-        user32.EnumChildWindows(top, ENUMPROC(lambda h, _l: hwnds.append(h) or True), 0)
-
-        # callbacky musi zustat zive (jinak je GC uvolni a Windows zavola smeti)
-        self._history_wndprocs = []
-        for hwnd in hwnds:
-            old = {}
-
-            def proc(h, msg, wp, lp, old=old):
-                if msg == WM_MOUSEACTIVATE:
-                    return MA_NOACTIVATE
-                return user32.CallWindowProcW(old["p"], h, msg, wp, lp)
-
-            cb = WNDPROC(proc)
-            old["p"] = user32.SetWindowLongPtrW(hwnd, GWLP_WNDPROC, ctypes.cast(cb, ctypes.c_void_p))
-            self._history_wndprocs.append(cb)
-
-    def _on_history_press(self, event):
-        win = self.history_window
-        self._hist_drag = (event.x_root, event.y_root, win.winfo_x(), win.winfo_y(),
-                           win.winfo_width(), win.winfo_height())
-
-    def _on_history_move(self, event):
-        sx, sy, x0, y0, w0, h0 = self._hist_drag
-        self.history_window.geometry(f"+{x0 + event.x_root - sx}+{y0 + event.y_root - sy}")
-
-    def _on_history_resize(self, event):
-        sx, sy, x0, y0, w0, h0 = self._hist_drag
-        w = max(250, w0 + event.x_root - sx)
-        h = max(150, h0 + event.y_root - sy)
-        self.history_window.geometry(f"{w}x{h}+{x0}+{y0}")
-
-    def _save_history_geometry(self):
-        win = self.history_window
-        if win is None:
-            return
-        try:
-            self.settings["history_x"] = win.winfo_x()
-            self.settings["history_y"] = win.winfo_y()
-            self.settings["history_w"] = win.winfo_width()
-            self.settings["history_h"] = win.winfo_height()
-        except tk.TclError:
-            return
-        save_settings(self.settings)
-
-    def _close_history_window(self):
-        if self.history_window is not None:
-            self._save_history_geometry()
-            try:
-                self.history_window.destroy()
-            except tk.TclError:
-                pass
-        self.history_window = None
-        self.history_text = None
-
-    def _history_append(self, stamp, en, cz, force_scroll=False):
-        text = self.history_text
-        if text is None:
-            return
-        try:
-            # posunout dolu jen kdyz uzivatel uz je dole - kdyz si odscrolloval
-            # nahoru a cte starsi preklad, nechceme mu ho cuknout pryc
-            at_bottom = text.yview()[1] >= 0.999
-            text.config(state="normal")
-            if text.get("1.0", "end").startswith("Zatím žádné překlady."):
-                text.delete("1.0", "end")
-            text.insert("end", f"{stamp}  ", "time")
-            text.insert("end", f"{en}\n", "en")
-            text.insert("end", f"{cz}\n\n", "cz")
-            text.config(state="disabled")
-            if at_bottom or force_scroll:
-                text.see("end")
-        except tk.TclError:
-            self.history_text = None
-
-    @staticmethod
-    def _open_history_file():
-        try:
-            os.startfile(HISTORY_FILE)
-        except OSError as exc:
-            print(f"[soubor s historii se nepodarilo otevrit: {exc}]")
 
     # ------------------------------------------------------------ system tray
 
@@ -1013,7 +761,6 @@ class Overlay:
             pystray.MenuItem(running_text, lambda icon, item: command_queue.put("toggle_running")),
             pystray.MenuItem(move_text, lambda icon, item: command_queue.put("toggle_move")),
             pystray.MenuItem("Nastavení...", lambda icon, item: command_queue.put("settings")),
-            pystray.MenuItem("Historie překladů...", lambda icon, item: command_queue.put("history")),
             pystray.MenuItem("Resetovat pozici", lambda icon, item: command_queue.put("reset_position")),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(f"Verze {VERSION}", None, enabled=False),
@@ -1037,12 +784,8 @@ class Overlay:
 
     # ------------------------------------------------------------ klávesové zkratky
 
-    def _hotkey_entry(self, which):
-        return {"settings": self.hk_settings_entry, "move": self.hk_move_entry,
-                "history": self.hk_history_entry}[which]
-
     def _record_hotkey(self, which):
-        entry = self._hotkey_entry(which)
+        entry = self.hk_settings_entry if which == "settings" else self.hk_move_entry
         entry.config(state="normal")
         entry.delete(0, tk.END)
         entry.insert(0, "Stiskni klávesy...")
@@ -1069,11 +812,6 @@ class Overlay:
                 keyboard.add_hotkey(self.settings["hotkey_move"], lambda: command_queue.put("toggle_move"))
             except Exception as exc:
                 print(f"[zkratka pro přesun se nepodařila zaregistrovat: {exc}]")
-        if self.settings.get("hotkey_history"):
-            try:
-                keyboard.add_hotkey(self.settings["hotkey_history"], lambda: command_queue.put("history"))
-            except Exception as exc:
-                print(f"[zkratka pro historii se nepodařila zaregistrovat: {exc}]")
 
     # ------------------------------------------------------------ ukončení
 
@@ -1100,8 +838,7 @@ class Overlay:
     def _poll(self):
         try:
             while True:
-                stamp, en, text = overlay_queue.get_nowait()
-                self._history_append(stamp, en, text)
+                text = overlay_queue.get_nowait()
                 self._resize(text)
                 if self._clear_job:
                     self.root.after_cancel(self._clear_job)
@@ -1116,7 +853,7 @@ class Overlay:
                 cmd = command_queue.get_nowait()
                 if isinstance(cmd, tuple) and cmd[0] == "hotkey_captured":
                     _, which, combo = cmd
-                    entry = self._hotkey_entry(which)
+                    entry = self.hk_settings_entry if which == "settings" else self.hk_move_entry
                     try:
                         if entry is not None and entry.winfo_exists():
                             entry.config(state="normal")
@@ -1127,8 +864,6 @@ class Overlay:
                     continue
                 if cmd == "settings":
                     self._toggle_settings_panel()
-                elif cmd == "history":
-                    self._toggle_history_window()
                 elif cmd == "toggle_move":
                     self._toggle_move_mode()
                 elif cmd == "toggle_running":
@@ -1186,8 +921,7 @@ def transcriber():
                 f"[čas: přepis={t1 - t0:.2f}s překlad={t2 - t1:.2f}s "
                 f"audio={len(audio) / WHISPER_RATE:.1f}s fronta={queued}]\n"
             )
-            stamp = history_add(text, translated)
-            overlay_queue.put((stamp, text, translated))
+            overlay_queue.put(translated)
         except Exception as exc:
             print(f"[chyba přepisu: {exc}]")
         finally:
@@ -1195,11 +929,6 @@ def transcriber():
 
 
 if __name__ == "__main__":
-    # historie je jen pro aktualni beh - pri kazdem spusteni zacina nanovo
-    try:
-        open(HISTORY_FILE, "w", encoding="utf-8").close()
-    except OSError as exc:
-        print(f"[soubor s historii se nepodarilo vytvorit: {exc}]")
     threading.Thread(target=transcriber, daemon=True).start()
     threading.Thread(target=capture, daemon=True).start()
     Overlay().run()
